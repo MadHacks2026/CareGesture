@@ -16,8 +16,9 @@ import uvicorn
 
 from .api import create_app
 from .gesture_state_machine import GestureStateMachine
+from .detection import DetectionTracker
 from .request_store import RequestStore
-from .schemas import Environment, GesturePrediction, Request, Status
+from .schemas import Detection, Environment, GesturePrediction, Request, Status
 
 # If no prediction arrives for this long, the camera/inference is not working.
 PREDICTION_TIMEOUT_MS = 3000
@@ -35,6 +36,7 @@ class Backend:
     def __init__(self, now_ms: Callable[[], int] = wall_clock_ms) -> None:
         self.store = RequestStore()
         self._machine = GestureStateMachine()
+        self._tracker = DetectionTracker()
         self._now_ms = now_ms  # injectable so tests can control time
         self._lock = threading.Lock()
         self._last_prediction_at: Optional[int] = None   # backend clock
@@ -45,11 +47,19 @@ class Backend:
         """Member 1 calls this for every frame. Returns the new request if
         this prediction confirmed a hold. Never looks at the sensor."""
         with self._lock:
-            self._last_prediction_at = self._now_ms()
+            now = self._now_ms()
+            self._last_prediction_at = now
             request_type = self._machine.update(prediction)
+            self._tracker.update(prediction, request_type is not None, now)
         if request_type is None:
             return None
-        return self.store.create(request_type)
+        # Room-comfort requests carry the room conditions at this moment.
+        snapshot = None
+        if request_type == "room_comfort":
+            current = self.get_environment()
+            if current.temperature_c is not None:
+                snapshot = current
+        return self.store.create(request_type, environment=snapshot)
 
     def handle_environment(self, reading: Environment) -> None:
         """Member 4 calls this for every Thermo reading."""
@@ -71,12 +81,22 @@ class Backend:
                 }
             )
 
+    def _predictions_fresh(self) -> bool:
+        """Caller must hold self._lock."""
+        return (
+            self._last_prediction_at is not None
+            and self._now_ms() - self._last_prediction_at <= PREDICTION_TIMEOUT_MS
+        )
+
+    def get_detection(self) -> Detection:
+        with self._lock:
+            return self._tracker.detection(
+                self._machine, self._predictions_fresh(), self._now_ms()
+            )
+
     def get_status(self) -> Status:
         with self._lock:
-            predictions_fresh = (
-                self._last_prediction_at is not None
-                and self._now_ms() - self._last_prediction_at <= PREDICTION_TIMEOUT_MS
-            )
+            predictions_fresh = self._predictions_fresh()
         # With one prediction stream we cannot tell a dead camera from dead
         # inference, so both follow prediction freshness.
         return Status(

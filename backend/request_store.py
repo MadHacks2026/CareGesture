@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from .schemas import Request
+from .schemas import Environment, Request
 
 DEFAULT_ROOM_ID = "room-101"
 
@@ -18,6 +18,10 @@ ALLOWED_TRANSITIONS = {
     "new": "acknowledged",
     "acknowledged": "resolved",
 }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class RequestNotFound(Exception):
@@ -34,7 +38,12 @@ class RequestStore:
         self._counter = 0
         self._lock = threading.Lock()  # API threads and the mock thread share this
 
-    def create(self, request_type: str, room_id: str = DEFAULT_ROOM_ID) -> Request:
+    def create(
+        self,
+        request_type: str,
+        room_id: str = DEFAULT_ROOM_ID,
+        environment: Optional[Environment] = None,
+    ) -> Request:
         with self._lock:
             self._counter += 1
             request = Request(
@@ -42,7 +51,8 @@ class RequestStore:
                 room_id=room_id,
                 type=request_type,
                 status="new",
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=_now_iso(),
+                environment=environment,
             )
             self._requests[request.id] = request
             return request
@@ -66,6 +76,10 @@ class RequestStore:
                 raise InvalidTransition(
                     f"cannot change {request.status} -> {new_status}"
                 )
-            updated = request.model_copy(update={"status": new_status})
+            # Record when the nurse made each step (used for response times).
+            stamp = "acknowledged_at" if new_status == "acknowledged" else "resolved_at"
+            updated = request.model_copy(
+                update={"status": new_status, stamp: _now_iso()}
+            )
             self._requests[request_id] = updated
             return updated

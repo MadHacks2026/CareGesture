@@ -37,7 +37,10 @@ Do not change a field without telling the whole team.
   "room_id": "room-101",
   "type": "assistance",
   "status": "new",
-  "created_at": "2026-11-14T18:30:00.123456+00:00"
+  "created_at": "2026-11-14T18:30:00.123456+00:00",
+  "acknowledged_at": null,
+  "resolved_at": null,
+  "environment": null
 }
 ```
 
@@ -46,6 +49,8 @@ Do not change a field without telling the whole team.
 | `type` | `assistance`, `water`, `room_comfort` |
 | `status` | `new`, `acknowledged`, `resolved` |
 | `created_at` | ISO-8601, UTC |
+| `acknowledged_at`, `resolved_at` | ISO-8601, UTC. `null` until a nurse makes that step |
+| `environment` | An `Environment` snapshot taken when a `room_comfort` request was created. `null` for other types, or if no sensor reading existed yet |
 
 ### GesturePrediction
 
@@ -129,6 +134,26 @@ Returns `Environment`. Always succeeds. Before any reading arrives it returns
 ### `GET /api/status`
 
 Returns `Status`.
+
+### `GET /api/detection?room_id=01`
+
+What the patient screen should show right now. `room_id` is accepted but
+ignored (one camera, one room). Returns:
+
+```json
+{ "state": "recognizing", "label": "paper", "progress": 0.53, "failed_attempts_recent": 1 }
+```
+
+| `state` | Meaning |
+| --- | --- |
+| `ready` | Waiting for a gesture |
+| `recognizing` | A gesture is being held. `label` and `progress` (0.0 to 1.0) are set |
+| `sent` | A request was just created (shown for 3 s) |
+| `rejected` | A gesture was tried but not accepted: too brief (at least 0.3 s of hand in view, no request), or held but never confident enough. Shown for 3 s |
+| `unavailable` | No predictions for 3 s: camera or inference is down |
+
+`label` and `progress` are `null` unless `state` is `recognizing`.
+`failed_attempts_recent` counts rejected attempts in the last 5 minutes.
 
 ### `GET /api/stream`
 

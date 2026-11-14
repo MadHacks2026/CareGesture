@@ -58,7 +58,13 @@ def test_held_gesture_creates_one_request(client):
     assert len(requests) == 1
     assert requests[0]["type"] == "assistance"
     assert requests[0]["status"] == "new"
-    assert set(requests[0]) == {"id", "room_id", "type", "status", "created_at"}
+    assert set(requests[0]) == {
+        "id", "room_id", "type", "status", "created_at",
+        "acknowledged_at", "resolved_at", "environment",
+    }
+    assert requests[0]["acknowledged_at"] is None
+    assert requests[0]["resolved_at"] is None
+    assert requests[0]["environment"] is None  # only room_comfort carries one
 
 
 def test_brief_gesture_creates_nothing(client):
@@ -155,3 +161,120 @@ def test_demo_trigger_only_exists_in_mock_mode(client):
     assert response.status_code == 200
     assert response.json()["demo_only"] is True
     assert mock_client.get("/api/requests").json()[0]["type"] == "water"
+
+
+# --- Timestamps, environment snapshot, detection ------------------------------
+
+def test_nurse_steps_are_timestamped(client):
+    hold(client, "scissors")
+    request_id = client.get("/api/requests").json()[0]["id"]
+    acked = client.patch(f"/api/requests/{request_id}", json={"status": "acknowledged"}).json()
+    assert acked["acknowledged_at"] is not None and acked["resolved_at"] is None
+    done = client.patch(f"/api/requests/{request_id}", json={"status": "resolved"}).json()
+    assert done["acknowledged_at"] == acked["acknowledged_at"]
+    assert done["resolved_at"] is not None
+
+
+def test_room_comfort_carries_environment_snapshot(client):
+    send_environment(client)
+    hold(client, "rock")
+    request = client.get("/api/requests").json()[0]
+    assert request["type"] == "room_comfort"
+    assert request["environment"]["temperature_c"] == 22.5
+    assert request["environment"]["humidity_pct"] == 44.0
+
+
+def test_room_comfort_without_a_reading_has_no_snapshot(client):
+    hold(client, "rock")
+    request = client.get("/api/requests").json()[0]
+    assert request["type"] == "room_comfort"
+    assert request["environment"] is None
+
+
+def test_other_types_have_no_snapshot(client):
+    send_environment(client)
+    hold(client, "paper")
+    assert client.get("/api/requests").json()[0]["environment"] is None
+
+
+def detection(client):
+    return client.get("/api/detection", params={"room_id": "01"}).json()
+
+
+def post_prediction(client, label, ts, confidence=0.9):
+    client.post(
+        "/api/ingest/prediction",
+        json={"label": label, "confidence": confidence, "timestamp_ms": ts},
+    )
+
+
+def test_detection_unavailable_before_any_prediction(client):
+    assert detection(client)["state"] == "unavailable"
+
+
+def test_detection_ready_when_idle(client):
+    post_prediction(client, "none", 0)
+    assert detection(client)["state"] == "ready"
+
+
+def test_detection_shows_hold_progress(client):
+    for ts in range(0, 801, 100):
+        post_prediction(client, "paper", ts)
+    result = detection(client)
+    assert result["state"] == "recognizing"
+    assert result["label"] == "paper"
+    assert result["progress"] == pytest.approx(0.53, abs=0.01)
+
+
+def test_detection_sent_then_back_to_ready(client, clock):
+    hold(client, "paper")
+    assert detection(client)["state"] == "sent"
+    clock.now += 3500
+    post_prediction(client, "none", 2000)
+    assert detection(client)["state"] == "ready"
+
+
+def test_detection_brief_wave_is_rejected_and_counted(client):
+    for ts in range(0, 501, 100):
+        post_prediction(client, "paper", ts)
+    post_prediction(client, "none", 600)
+    result = detection(client)
+    assert result["state"] == "rejected"
+    assert result["failed_attempts_recent"] == 1
+
+
+def test_detection_jitter_is_not_an_attempt(client):
+    post_prediction(client, "paper", 0)
+    post_prediction(client, "paper", 100)
+    post_prediction(client, "none", 200)
+    result = detection(client)
+    assert result["state"] == "ready"
+    assert result["failed_attempts_recent"] == 0
+
+
+def test_detection_unsure_gesture_is_rejected(client):
+    for ts in range(0, 2001, 100):
+        post_prediction(client, "scissors", ts, confidence=0.5)
+    assert detection(client)["state"] == "rejected"
+    assert client.get("/api/requests").json() == []
+
+
+def test_detection_successful_hold_is_not_a_failure(client):
+    hold(client, "paper", duration_ms=3000)
+    post_prediction(client, "none", 3100)
+    assert detection(client)["failed_attempts_recent"] == 0
+
+
+def test_detection_failures_expire(client, clock):
+    for ts in range(0, 501, 100):
+        post_prediction(client, "paper", ts)
+    post_prediction(client, "none", 600)
+    clock.now += 301_000
+    post_prediction(client, "none", 700)
+    assert detection(client)["failed_attempts_recent"] == 0
+
+
+def test_detection_unavailable_when_predictions_stop(client, clock):
+    post_prediction(client, "none", 0)
+    clock.now += PREDICTION_TIMEOUT_MS + 1
+    assert detection(client)["state"] == "unavailable"

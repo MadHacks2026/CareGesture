@@ -94,6 +94,18 @@ class GestureStateMachine:
 
         return None
 
+    @property
+    def label(self) -> Optional[str]:
+        """The gesture currently being held, or None."""
+        return self._label if self.state == HOLDING else None
+
+    @property
+    def progress(self) -> float:
+        """How far through the hold we are, 0.0 to 1.0 (0.0 when not holding)."""
+        if self.state != HOLDING or self._hold_start is None:
+            return 0.0
+        return max(0.0, min(1.0, (self._last_ts - self._hold_start) / HOLD_MS))
+
     def _reset(self) -> None:
         self.state = IDLE
         self._label = None

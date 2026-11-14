@@ -5,6 +5,7 @@ For the frontend (Member 3):
   PATCH /api/requests/{id}       body {"status": "acknowledged" | "resolved"}
   GET   /api/environment         latest room reading (check "stale")
   GET   /api/status              device health
+  GET   /api/detection           what the patient screen should show right now
   GET   /api/stream              Server-Sent Events, one snapshot per second
                                  (or just poll the GET routes every second)
 
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 
 from .request_store import InvalidTransition, RequestNotFound
 from .schemas import (
+    Detection,
     Environment,
     GesturePrediction,
     Request,
@@ -77,6 +79,11 @@ def create_app(backend, mock: bool = False) -> FastAPI:
     @app.get("/api/status", response_model=Status)
     def get_status():
         return backend.get_status()
+
+    @app.get("/api/detection", response_model=Detection)
+    def get_detection(room_id: str = ""):
+        # One camera, one room: room_id is accepted so the frontend can send it.
+        return backend.get_detection()
 
     @app.get("/api/stream")
     async def stream():

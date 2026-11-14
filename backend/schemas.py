@@ -45,6 +45,12 @@ class Request(BaseModel):
     type: RequestType
     status: RequestStatus
     created_at: str  # ISO-8601, UTC
+    # Set when a nurse moves the request forward (ISO-8601, UTC). null until then.
+    acknowledged_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    # Room conditions at the moment a room_comfort request was created.
+    # null for other types, or if no sensor reading existed at that time.
+    environment: Optional["Environment"] = None
 
 
 class Environment(BaseModel):
@@ -66,6 +72,10 @@ class Environment(BaseModel):
     stale: bool = False  # set by the backend, ignored on input
 
 
+# Request refers to Environment, which is defined just above.
+Request.model_rebuild()
+
+
 class Status(BaseModel):
     """Device health. The UI must not imply monitoring if camera_ok or
     inference_ok is false."""
@@ -74,3 +84,22 @@ class Status(BaseModel):
     inference_ok: bool
     sensor_ok: bool
     backend_ok: bool
+
+
+DetectionState = Literal["ready", "recognizing", "sent", "rejected", "unavailable"]
+
+
+class Detection(BaseModel):
+    """What the patient screen should show right now.
+
+    ready        waiting for a gesture
+    recognizing  a gesture is being held; progress goes 0.0 -> 1.0
+    sent         a request was just created
+    rejected     a gesture was tried but not accepted (too brief, too unsure)
+    unavailable  predictions have stopped arriving (camera or inference down)
+    """
+
+    state: DetectionState
+    label: Optional[GestureLabel] = None  # only while recognizing
+    progress: Optional[float] = None      # only while recognizing, 0.0 to 1.0
+    failed_attempts_recent: int = 0       # rejected attempts in the last 5 minutes
