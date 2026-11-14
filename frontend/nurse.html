@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareGesture - Nurse station</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="nurse">
+  <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
+    Connection to CareGesture lost. New gesture requests will not appear. Check patients directly.
+  </div>
+  <div id="mock-banner" class="banner banner-demo" hidden>
+    Demo mode: simulated data. Fictional rooms only. Not a clinical nurse-call system.
+  </div>
+
+  <header class="nurse-header">
+    <h1>CareGesture nurse station</h1>
+    <div id="health" class="health" aria-label="System health"></div>
+    <button id="sound-toggle" class="btn btn-small" aria-pressed="false">Sound alerts: off</button>
+  </header>
+
+  <main class="nurse-main">
+    <section aria-labelledby="active-title">
+      <div class="section-head">
+        <h2 id="active-title">Active requests</h2>
+        <span id="active-count" class="count"></span>
+      </div>
+      <p id="notice" class="insight-callout" role="status" hidden></p>
+      <div id="active-list" class="request-list"></div>
+      <p id="sr-announce" class="muted" aria-live="assertive" style="position:absolute;left:-9999px"></p>
+    </section>
+
+    <aside class="side">
+      <section class="panel" aria-labelledby="env-title">
+        <h2 id="env-title">Room <span id="room-id"></span> conditions</h2>
+        <div id="env-panel"></div>
+        <p class="env-note">Ambient room readings from the Modulino Thermo. Not a patient temperature.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="insight-title">
+        <h2 id="insight-title">Response insights (today)</h2>
+        <div id="insights"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="resolved-title">
+        <h2 id="resolved-title">Recently resolved</h2>
+        <ol id="resolved-list" class="resolved-list"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <section id="mock-controls" class="mock-controls" aria-labelledby="mock-title" hidden>
+    <h2 id="mock-title">Demo-only controls</h2>
+    <div class="row">
+      <button class="btn btn-small" data-mock="seed">Add sample history</button>
+      <button class="btn btn-small" data-mock="sensor" id="mock-sensor">Unplug sensor</button>
+      <button class="btn btn-small" data-mock="reset">Reset demo</button>
+      <span class="muted">Make gestures from the patient page's demo controls.</span>
+    </div>
+  </section>
+
+  <script src="api_client.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    const api = window.CareAPI;
+    const u = api.util;
+    const $ = (id) => document.getElementById(id);
+
+    let requests = [];
+    let status = null;
+    let env = null;
+    let detection = null;
+    let failures = 0;
+    let everConnected = false;
+    let knownIds = null;
+    const freshIds = new Set();
+    const overdueAlerted = new Set();
+    const pending = new Set();
+    const errors = new Map();
+    let soundOn = false;
+    let audioCtx = null;
+
+    $('room-id').textContent = api.ROOM_ID;
+
+    // ---------- live updates ----------
+    function onSnapshot(snap) {
+      requests = snap.requests;
+      status = snap.status;
+      if (snap.environment !== undefined) env = snap.environment; // undefined = keep last reading
+      failures = 0;
+      everConnected = true;
+      noticeChanges();
+      render();
+    }
+
+    function onFail() {
+      failures++;
+      render();
+    }
+
+    async function pollDetection() {
+      try { detection = await api.getDetection(); } catch (err) { detection = null; }
+    }
+
+    function loop(fn, ms) {
+      (async function tick() {
+        await fn();
+        setTimeout(tick, ms);
+      })();
+    }
+
+    // ---------- alerts ----------
+    function beep(freq, ms) {
+      if (!soundOn || !audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.value = 0.15;
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + ms / 1000);
+    }
+
+    $('sound-toggle').addEventListener('click', () => {
+      soundOn = !soundOn;
+      if (soundOn && !audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      $('sound-toggle').textContent = 'Sound alerts: ' + (soundOn ? 'on' : 'off');
+      $('sound-toggle').setAttribute('aria-pressed', String(soundOn));
+      if (soundOn) beep(660, 120);
+    });
+
+    function noticeChanges() {
+      const ids = new Set(requests.map((r) => r.id));
+      if (knownIds) {
+        requests.forEach((r) => {
+          if (!knownIds.has(r.id) && r.status === 'new') {
+            freshIds.add(r.id);
+            setTimeout(() => freshIds.delete(r.id), 3000);
+            beep(880, 180);
+            $('sr-announce').textContent = 'New ' + u.typeInfo(r.type).label + ' request from room ' + r.room_id;
+          }
+        });
+      }
+      knownIds = ids;
+      const now = Date.now();
+      requests.forEach((r) => {
+        if (isOverdue(r, now) && !overdueAlerted.has(r.id)) {
+          overdueAlerted.add(r.id);
+          beep(520, 400);
+        }
+      });
+    }
+
+    function isOverdue(r, now) {
+      return r.status === 'new' && r.created_ms && now - r.created_ms > api.OVERDUE_MS;
+    }
+
+    // ---------- actions ----------
+    $('active-list').addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (pending.has(id)) return;
+      pending.add(id);
+      errors.delete(id);
+      renderActive(true);
+      try {
+        await api.updateRequest(id, btn.dataset.action);
+        await live.refresh(); // show the backend's status, never an optimistic guess
+      } catch (err) {
+        if (err.status === 409 || err.status === 404) {
+          // The card may vanish after the refresh, so say it at the top of the list instead.
+          showNotice(err.status === 409
+            ? 'Request ' + id + ' was already updated elsewhere. The list now shows its current status.'
+            : 'Request ' + id + ' no longer exists on the backend.');
+        } else {
+          errors.set(id, 'Could not update. Check the connection and try again.');
+        }
+        await live.refresh();
+      } finally {
+        pending.delete(id);
+        renderActive(true);
+      }
+    });
+
+    let noticeTimer = null;
+    function showNotice(text) {
+      $('notice').textContent = text;
+      $('notice').hidden = false;
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 8000);
+    }
+
+    // ---------- rendering ----------
+    function connected() {
+      return everConnected && failures < 2;
+    }
+
+    function chip(label, value) {
+      const cls = value === true ? 'ok' : value === false ? 'bad' : 'unknown';
+      const word = value === true ? 'OK' : value === false ? 'Offline' : 'Unknown';
+      const mark = value === true ? '✔' : value === false ? '✖' : '?';
+      return '<span class="chip chip-' + cls + '"><span aria-hidden="true">' + mark + '</span>' + label + ': ' + word + '</span>';
+    }
+
+    function renderHealth() {
+      const conn = connected();
+      const s = conn && status ? status : { camera_ok: null, inference_ok: null, sensor_ok: null, backend_ok: false };
+      let html = chip('Camera', s.camera_ok) + chip('Model', s.inference_ok) + chip('Sensor', s.sensor_ok) +
+        chip('Backend', conn ? s.backend_ok : false);
+      const attempts = detection ? detection.failed_attempts_recent : null;
+      if (attempts !== null && attempts !== undefined) {
+        const cls = attempts >= 3 ? 'warn' : 'ok';
+        html += '<span class="chip chip-' + cls + '">Unrecognized attempts (10 min): ' + attempts + '</span>';
+      }
+      $('health').innerHTML = html;
+      $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
+    }
+
+    function sortActive(list, now) {
+      const rank = (r) => (isOverdue(r, now) ? 0 : r.status === 'new' ? 1 : 2);
+      return list.slice().sort((a, b) => {
+        const ra = rank(a), rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        if (ra === 0) return (a.created_ms || 0) - (b.created_ms || 0); // overdue: oldest first
+        if (ra === 1) return (b.created_ms || 0) - (a.created_ms || 0); // new: newest first
+        return (a.created_ms || 0) - (b.created_ms || 0);              // acknowledged: oldest first
+      });
+    }
+
+    function envLine(r, now) {
+      if (r.type !== 'room_comfort') return '';
+      const snap = r.environment;
+      if (snap && snap.temperature_c !== null) {
+        return '<div class="req-env">At request time: ' + snap.temperature_c.toFixed(1) + ' °C, ' +
+          Math.round(snap.humidity_pct) + '% humidity</div>';
+      }
+      if (!env || u.isEnvironmentStale(env, now)) {
+        return '<div class="req-env stale">Room sensor offline. No current reading.</div>';
+      }
+      return '<div class="req-env">Room now: ' + env.temperature_c.toFixed(1) + ' °C, ' +
+        Math.round(env.humidity_pct) + '% humidity</div>';
+    }
+
+    function card(r, now) {
+      const t = u.typeInfo(r.type);
+      const overdue = isOverdue(r, now);
+      const busy = pending.has(r.id);
+      const action = r.status === 'new' ? 'acknowledged' : 'resolved';
+      const actionLabel = busy ? 'Saving...' : r.status === 'new' ? 'Acknowledge' : 'Resolve';
+      const btnClass = r.status === 'new' ? 'btn btn-primary' : 'btn btn-ok';
+      const err = errors.get(r.id);
+      const sinceMs = r.status === 'new' ? r.created_ms : r.acknowledged_ms;
+      const waitLabel = r.status === 'new' ? 'Waiting' : 'Acknowledged';
+      const waitText = sinceMs ? ' · <span class="req-wait">' + waitLabel + ' <span data-since="' + sinceMs + '">' +
+        u.formatDuration(now - sinceMs) + '</span></span>' : '';
+      return '' +
+        '<article class="req-card status-' + r.status + (overdue ? ' overdue' : '') + (freshIds.has(r.id) ? ' fresh' : '') + '"' +
+        ' aria-label="' + u.escapeHtml(t.label + ' request, room ' + r.room_id + ', ' + r.status) + '">' +
+          '<div class="req-top">' +
+            '<span class="req-icon" aria-hidden="true">' + t.icon + '</span>' +
+            '<div><div class="req-type">' + u.escapeHtml(t.label) + '</div>' +
+            '<div class="req-room">Room ' + u.escapeHtml(r.room_id) + ' · ' + u.escapeHtml(r.id) + '</div></div>' +
+            '<div class="req-badges">' +
+              (overdue ? '<span class="badge badge-overdue">Overdue</span>' : '') +
+              '<span class="badge badge-' + r.status + '">' + (r.status === 'new' ? 'New' : 'Acknowledged') + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="req-meta">Requested ' + u.formatClock(r.created_ms) + waitText + '</div>' +
+          envLine(r, now) +
+          '<div class="req-actions">' +
+            '<button class="' + btnClass + '" data-id="' + u.escapeHtml(r.id) + '" data-action="' + action + '"' +
+            ' data-focus-key="card-' + u.escapeHtml(r.id) + '"' + (busy ? ' disabled' : '') + '>' + actionLabel + '</button>' +
+          '</div>' +
+          (err ? '<p class="req-error" role="alert">' + u.escapeHtml(err) + '</p>' : '') +
+        '</article>';
+    }
+
+    let lastActiveSig = '';
+    function renderActive(force) {
+      const now = Date.now();
+      const active = sortActive(requests.filter((r) => r.status !== 'resolved'), now);
+      const envKey = env ? [env.temperature_c, env.humidity_pct, u.isEnvironmentStale(env, now)].join('|') : 'none';
+      const sig = JSON.stringify([
+        active.map((r) => [r.id, r.status, isOverdue(r, now), freshIds.has(r.id)]),
+        [...pending], [...errors], envKey,
+      ]);
+      const list = $('active-list');
+      if (force || sig !== lastActiveSig) {
+        lastActiveSig = sig;
+        const focusKey = document.activeElement && document.activeElement.dataset
+          ? document.activeElement.dataset.focusKey : null;
+        list.innerHTML = active.length
+          ? active.map((r) => card(r, now)).join('')
+          : '<div class="empty">No active requests. New requests appear here automatically.</div>';
+        if (focusKey) {
+          const el = list.querySelector('[data-focus-key="' + CSS.escape(focusKey) + '"]');
+          if (el) el.focus();
+        }
+      } else {
+        list.querySelectorAll('[data-since]').forEach((el) => {
+          el.textContent = u.formatDuration(now - Number(el.dataset.since));
+        });
+      }
+      const newCount = active.filter((r) => r.status === 'new').length;
+      $('active-count').textContent = active.length ? newCount + ' new · ' + active.length + ' open' : '';
+      document.title = (newCount ? '(' + newCount + ') ' : '') + 'CareGesture - Nurse station';
+    }
+
+    function renderEnvironment() {
+      const el = $('env-panel');
+      const now = Date.now();
+      if (!env || env.temperature_c === null) {
+        el.innerHTML = '<p class="env-age stale">No reading from the room sensor.</p>';
+        return;
+      }
+      const stale = u.isEnvironmentStale(env, now);
+      const age = u.readingAgeMs(env, now);
+      el.innerHTML =
+        '<div class="env-big">' +
+          '<div><div class="env-value">' + env.temperature_c.toFixed(1) + ' °C</div><div class="env-label">Temperature</div></div>' +
+          '<div><div class="env-value">' + (env.humidity_pct === null ? '--' : Math.round(env.humidity_pct) + '%') + '</div><div class="env-label">Humidity</div></div>' +
+        '</div>' +
+        '<p class="env-age' + (stale ? ' stale' : '') + '">' +
+          (stale ? 'Stale: sensor offline. Last reading ' + u.formatDuration(age) + ' ago.' : 'Updated ' + u.formatDuration(age) + ' ago') +
+        '</p>';
+    }
+
+    function avg(values) {
+      return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+    }
+
+    function renderInsights() {
+      const dayStart = new Date();
+      dayStart.setHours(0, 0, 0, 0);
+      const today = requests.filter((r) => (r.created_ms || 0) >= dayStart.getTime());
+      if (!today.length) {
+        $('insights').innerHTML = '<p class="muted">No requests yet today.</p>';
+        return;
+      }
+      const rows = Object.keys(api.REQUEST_TYPES).map((type) => {
+        const list = today.filter((r) => r.type === type);
+        const ack = avg(list.filter((r) => r.acknowledged_ms).map((r) => r.acknowledged_ms - r.created_ms));
+        const res = avg(list.filter((r) => r.resolved_ms).map((r) => r.resolved_ms - r.created_ms));
+        return { type, count: list.length, ack, res };
+      });
+      const body = rows.map((row) =>
+        '<tr><td>' + u.escapeHtml(u.typeInfo(row.type).label) + '</td><td>' + row.count + '</td>' +
+        '<td>' + (row.ack === null ? '--' : u.formatDuration(row.ack)) + '</td>' +
+        '<td>' + (row.res === null ? '--' : u.formatDuration(row.res)) + '</td></tr>'
+      ).join('');
+
+      let callout = '';
+      const timed = rows.filter((r) => r.ack !== null);
+      if (timed.length >= 2) {
+        const slowest = timed.reduce((a, b) => (b.ack > a.ack ? b : a));
+        const fastest = timed.reduce((a, b) => (b.ack < a.ack ? b : a));
+        if (slowest.ack > fastest.ack * 1.5) {
+          callout = '<p class="insight-callout">' + u.escapeHtml(u.typeInfo(slowest.type).label) +
+            ' requests wait longest to be acknowledged (' + u.formatDuration(slowest.ack) + ' on average).</p>';
+        }
+      }
+      const hasHandled = today.some((r) => r.status !== 'new');
+      const hasTimes = today.some((r) => r.acknowledged_ms);
+      const note = hasHandled && !hasTimes
+        ? '<p class="insight-note">Response times need acknowledged_at and resolved_at fields from the backend.</p>'
+        : '';
+
+      $('insights').innerHTML =
+        '<table class="insights-table"><thead><tr><th>Type</th><th>Count</th><th>Avg to ack</th><th>Avg to resolve</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>' + callout + note;
+    }
+
+    function renderResolved() {
+      const done = requests.filter((r) => r.status === 'resolved')
+        .sort((a, b) => (b.resolved_ms || b.created_ms || 0) - (a.resolved_ms || a.created_ms || 0))
+        .slice(0, 8);
+      $('resolved-list').innerHTML = done.length
+        ? done.map((r) => {
+            const t = u.typeInfo(r.type);
+            const took = r.resolved_ms && r.created_ms ? ' (took ' + u.formatDuration(r.resolved_ms - r.created_ms) + ')' : '';
+            return '<li><strong>' + u.escapeHtml(t.label) + '</strong> · Room ' + u.escapeHtml(r.room_id) +
+              ' · resolved ' + u.formatClock(r.resolved_ms || r.created_ms) + took + '</li>';
+          }).join('')
+        : '<li class="muted">Nothing resolved yet.</li>';
+    }
+
+    function render() {
+      renderHealth();
+      renderActive(false);
+      renderEnvironment();
+      renderInsights();
+      renderResolved();
+    }
+
+    // ---------- demo-only controls ----------
+    if (api.MOCK) {
+      $('mock-banner').hidden = false;
+      $('mock-controls').hidden = false;
+      const sync = () => {
+        $('mock-sensor').textContent = api.mock.getFlags().sensorOk ? 'Unplug sensor' : 'Reconnect sensor';
+      };
+      sync();
+      $('mock-controls').addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-mock]');
+        if (!btn) return;
+        if (btn.dataset.mock === 'seed') api.mock.seedHistory();
+        if (btn.dataset.mock === 'sensor') api.mock.setSensorOk(!api.mock.getFlags().sensorOk);
+        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; overdueAlerted.clear(); }
+        sync();
+      });
+    }
+
+    const live = api.live(onSnapshot, onFail);
+    loop(pollDetection, api.POLL_MS);
+  })();
+  </script>
+</body>
+</html>

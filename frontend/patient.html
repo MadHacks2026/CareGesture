@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareGesture - Patient</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="patient">
+  <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
+    Connection lost. Gesture requests are unavailable. Please use your call button.
+  </div>
+  <div id="mock-banner" class="banner banner-demo" hidden>
+    Demo mode: simulated data. No camera, model or sensor is connected.
+  </div>
+
+  <header class="patient-header">
+    <span>Room <span id="room-id"></span></span>
+    <span id="env-mini" class="env-mini" aria-label="Room conditions"></span>
+  </header>
+
+  <main>
+    <section id="state-panel" class="state-panel state-connecting" aria-live="polite" aria-atomic="true">
+      <div id="state-icon" class="state-icon" aria-hidden="true"></div>
+      <h1 id="state-title">Connecting...</h1>
+      <p id="state-detail">Checking the camera and connection.</p>
+      <div id="hold-progress" class="hold-progress" role="progressbar" aria-label="Gesture hold progress"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+        <div id="hold-bar" class="hold-bar"></div>
+      </div>
+    </section>
+
+    <section class="last-request panel" aria-labelledby="last-title">
+      <h2 id="last-title">Your last request</h2>
+      <div id="last-request" aria-live="polite"><p class="muted">No requests yet.</p></div>
+    </section>
+
+    <section class="guide" aria-labelledby="guide-title">
+      <h2 id="guide-title">Hold one of these gestures steady for about 2 seconds</h2>
+      <ul id="guide-list" class="guide-list"></ul>
+    </section>
+  </main>
+
+  <section id="mock-controls" class="mock-controls" aria-labelledby="mock-title" hidden>
+    <h2 id="mock-title">Demo-only controls (no camera involved)</h2>
+    <div class="row">
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="paper">Hold open palm</button>
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="scissors">Hold two fingers</button>
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="rock">Hold fist</button>
+      <button class="btn btn-small mock-only" data-mock="wave">Quick wave (should not send)</button>
+      <button class="btn btn-small mock-only" data-mock="camera" id="mock-camera">Unplug camera</button>
+      <button class="btn btn-small mock-only" data-mock="sensor" id="mock-sensor">Unplug sensor</button>
+      <button class="btn btn-small mock-only" data-mock="reset">Reset demo</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="assistance">Demo trigger: assistance</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="water">Demo trigger: water</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="room_comfort">Demo trigger: room comfort</button>
+    </div>
+    <p id="demo-error" class="req-error" role="alert" hidden></p>
+  </section>
+
+  <script src="api_client.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    const api = window.CareAPI;
+    const u = api.util;
+    const $ = (id) => document.getElementById(id);
+
+    let status = null;
+    let detection = null;
+    let requests = [];
+    let env = null;
+    let failures = 0;
+    let everConnected = false;
+    let detectionFailures = 0;
+
+    $('room-id').textContent = api.ROOM_ID;
+
+    // ---------- gesture guide (static) ----------
+    $('guide-list').innerHTML = Object.values(api.REQUEST_TYPES).map((t) =>
+      '<li>' +
+        '<div class="guide-icon" role="img" aria-label="' + u.escapeHtml(t.gestureName) + '">' + t.icon + '</div>' +
+        '<div class="guide-gesture">' + u.escapeHtml(t.gestureName) + '</div>' +
+        '<div class="guide-means">' + u.escapeHtml(t.label) + '</div>' +
+      '</li>'
+    ).join('');
+
+    // ---------- polling ----------
+    function loop(fn, ms) {
+      (async function tick() {
+        await fn();
+        setTimeout(tick, ms);
+      })();
+    }
+
+    function onSnapshot(snap) {
+      status = snap.status;
+      requests = snap.requests.filter((x) => !x.room_id || x.room_id === api.ROOM_ID);
+      if (snap.environment !== undefined) env = snap.environment; // undefined = keep last reading
+      failures = 0;
+      everConnected = true;
+      render();
+    }
+
+    function onFail() {
+      failures++;
+      render();
+    }
+
+    async function pollDetection() {
+      try {
+        detection = await api.getDetection();
+        detectionFailures = 0;
+      } catch (err) {
+        detectionFailures++;
+        if (detectionFailures >= 3) detection = null;
+      }
+      renderState();
+    }
+
+    // ---------- rendering ----------
+    function connected() {
+      return everConnected && failures < 2;
+    }
+
+    function latestRequest() {
+      return requests.slice().sort((a, b) => (b.created_ms || 0) - (a.created_ms || 0))[0] || null;
+    }
+
+    function setState(kind, icon, title, detail, progress) {
+      $('state-panel').className = 'state-panel state-' + kind;
+      $('state-icon').textContent = icon;
+      if ($('state-title').textContent !== title) $('state-title').textContent = title;
+      if ($('state-detail').textContent !== detail) $('state-detail').textContent = detail;
+      const hp = $('hold-progress');
+      if (progress === null || progress === undefined) {
+        hp.hidden = true;
+        $('hold-bar').style.width = '0%';
+      } else {
+        const pct = Math.round(progress * 100);
+        hp.hidden = false;
+        $('hold-bar').style.width = pct + '%';
+        hp.setAttribute('aria-valuenow', String(pct));
+      }
+    }
+
+    function renderState() {
+      const now = Date.now();
+      $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
+
+      if (!everConnected && failures < 3) {
+        setState('connecting', '…', 'Connecting...', 'Checking the camera and connection.');
+        return;
+      }
+      if (!connected()) {
+        setState('offline', '!', 'Gesture requests unavailable', 'The connection was lost. Please use your call button.');
+        return;
+      }
+      // Unknown (null) camera or model status is treated as unavailable, never as working.
+      const monitoring = status && status.camera_ok === true && status.inference_ok === true &&
+        !(detection && detection.state === 'unavailable');
+      if (!monitoring) {
+        const why = status && status.camera_ok === false ? 'The camera is offline.' : 'Gesture detection is not running.';
+        setState('offline', '!', 'Monitoring unavailable', why + ' Gesture requests will not be sent. Please use your call button.');
+        return;
+      }
+
+      const latest = latestRequest();
+      const justSent = latest && latest.created_ms && now - latest.created_ms < 4000;
+
+      if (detection && detection.state === 'recognizing') {
+        const t = gestureType(detection.label);
+        setState('recognizing', t ? t.icon : '', t ? 'Recognizing: ' + t.label : 'Recognizing...',
+          'Keep holding steady.', detection.progress === null ? 0 : detection.progress);
+      } else if (detection && detection.state === 'rejected') {
+        setState('rejected', '?', 'Not recognized', 'Nothing was sent. Hold the gesture steady and try again.');
+      } else if ((detection && detection.state === 'sent') || justSent) {
+        const t = latest ? u.typeInfo(latest.type) : null;
+        setState('sent', '✔', t ? t.patientText : 'Request sent', 'Your request was sent to the nurse.');
+      } else {
+        // Neutral icon on purpose: a waving hand would teach patients to wave, which is ignored.
+        setState('ready', '◎', 'Ready', 'Show a gesture to the camera to ask for help.');
+      }
+    }
+
+    function gestureType(label) {
+      if (!label) return null;
+      return Object.values(api.REQUEST_TYPES).find((t) => t.gesture === label) || null;
+    }
+
+    function renderLastRequest() {
+      const el = $('last-request');
+      const r = latestRequest();
+      if (!r) {
+        if (el.dataset.sig !== 'none') {
+          el.innerHTML = '<p class="muted">No requests yet.</p>';
+          el.dataset.sig = 'none';
+        }
+        return;
+      }
+      const sig = r.id + ':' + r.status;
+      if (el.dataset.sig === sig) return;
+      el.dataset.sig = sig;
+
+      const t = u.typeInfo(r.type);
+      const messages = {
+        new: 'Sent. Waiting for a nurse to see it.',
+        acknowledged: 'A nurse has seen your request.',
+        resolved: 'Your request has been resolved.',
+      };
+      const order = ['new', 'acknowledged', 'resolved'];
+      const labels = ['Sent', 'Seen by nurse', 'Resolved'];
+      const idx = order.indexOf(r.status);
+      const steps = labels.map((label, i) => {
+        const cls = i < idx ? 'done' : i === idx ? (r.status === 'resolved' ? 'done' : 'current') : '';
+        const mark = i <= idx ? '✔ ' : '';
+        return '<li class="' + cls + '"' + (i === idx ? ' aria-current="step"' : '') + '>' + mark + labels[i] + '</li>';
+      }).join('');
+
+      el.innerHTML =
+        '<div class="last-type"><span aria-hidden="true">' + t.icon + '</span>' + u.escapeHtml(t.label) + '</div>' +
+        '<p class="last-msg">' + messages[r.status] + ' <span class="muted">Sent at ' + u.formatClock(r.created_ms) + '.</span></p>' +
+        '<ol class="steps" aria-label="Request progress">' + steps + '</ol>';
+    }
+
+    function renderEnvironment() {
+      const el = $('env-mini');
+      const now = Date.now();
+      if (!env || env.temperature_c === null) {
+        el.textContent = 'Room sensor offline';
+        el.classList.add('stale');
+        return;
+      }
+      if (u.isEnvironmentStale(env, now)) {
+        el.textContent = 'Room sensor offline (last reading ' + u.formatDuration(u.readingAgeMs(env, now)) + ' ago)';
+        el.classList.add('stale');
+      } else {
+        el.textContent = 'Room ' + env.temperature_c.toFixed(1) + ' °C · ' + Math.round(env.humidity_pct) + '% humidity';
+        el.classList.remove('stale');
+      }
+    }
+
+    function render() {
+      renderState();
+      renderLastRequest();
+      renderEnvironment();
+    }
+
+    // ---------- demo-only controls ----------
+    // ?mock=1: everything simulated in the browser. ?demo=1 with a real backend: only the
+    // trigger buttons, which call POST /api/demo/trigger (exists only when the backend runs in mock mode).
+    if (api.MOCK || api.DEMO) {
+      $('mock-banner').hidden = !api.MOCK;
+      $('mock-controls').hidden = false;
+      document.querySelectorAll('.mock-only').forEach((el) => { el.hidden = !api.MOCK; });
+      const syncMockLabels = () => {
+        if (!api.MOCK) return;
+        const f = api.mock.getFlags();
+        $('mock-camera').textContent = f.cameraOk ? 'Unplug camera' : 'Reconnect camera';
+        $('mock-sensor').textContent = f.sensorOk ? 'Unplug sensor' : 'Reconnect sensor';
+      };
+      syncMockLabels();
+      $('mock-controls').addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-mock]');
+        if (!btn) return;
+        $('demo-error').hidden = true;
+        if (btn.dataset.mock === 'trigger') {
+          try {
+            await api.demoTrigger(btn.dataset.type);
+            await live.refresh();
+          } catch (err) {
+            $('demo-error').textContent = err.message || 'Demo trigger failed.';
+            $('demo-error').hidden = false;
+          }
+          return;
+        }
+        const f = api.mock.getFlags();
+        switch (btn.dataset.mock) {
+          case 'hold': api.mock.holdGesture(btn.dataset.gesture); break;
+          case 'wave': api.mock.briefWave(); break;
+          case 'camera': api.mock.setCameraOk(!f.cameraOk); break;
+          case 'sensor': api.mock.setSensorOk(!f.sensorOk); break;
+          case 'reset': api.mock.reset(); break;
+        }
+        syncMockLabels();
+      });
+    }
+
+    const live = api.live(onSnapshot, onFail);
+    loop(pollDetection, api.DETECTION_POLL_MS);
+  })();
+  </script>
+</body>
+</html>

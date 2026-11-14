@@ -1,0 +1,206 @@
+/* CareGesture shared styles (Member 3). High contrast, large targets, no motion when reduced. */
+
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --text: #101317;
+  --muted: #464e5b;
+  --border: #c5cbd4;
+  --accent: #0b57d0;
+  --accent-ink: #ffffff;
+  --ok: #0d6b37;
+  --ok-bg: #e2f3e8;
+  --warn: #7a4a00;
+  --warn-bg: #fff0d1;
+  --danger: #a8231b;
+  --danger-bg: #fde6e4;
+  --info: #0b3d91;
+  --info-bg: #e5eeff;
+  --unknown: #4b5260;
+  --unknown-bg: #eceef2;
+  --focus: #ffb300;
+  --radius: 14px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); line-height: 1.45; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 4px solid var(--focus); outline-offset: 3px; }
+h1, h2, h3 { line-height: 1.2; margin: 0; }
+.muted { color: var(--muted); }
+
+/* ---------- banners ---------- */
+.banner { padding: 14px 24px; font-weight: 700; font-size: 1.15rem; }
+.banner-danger { background: var(--danger); color: #fff; }
+.banner-demo { background: #2f343c; color: #fff; font-weight: 600; font-size: 0.95rem; }
+
+/* ---------- buttons ---------- */
+.btn {
+  font: inherit; font-weight: 700; font-size: 1.05rem;
+  min-height: 52px; padding: 10px 22px; border-radius: 10px;
+  border: 2px solid var(--text); background: var(--surface); color: var(--text); cursor: pointer;
+}
+.btn:hover { background: #e9ecf1; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: #0846a8; }
+.btn-ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+.btn-ok:hover { background: #0a552c; }
+.btn:disabled { opacity: 0.6; cursor: progress; }
+.btn-small { min-height: 40px; padding: 6px 14px; font-size: 0.95rem; }
+
+/* ---------- badges and chips ---------- */
+.badge, .chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 700; border-radius: 999px; padding: 4px 12px; font-size: 0.9rem; white-space: nowrap;
+  border: 2px solid transparent;
+}
+.badge-new { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+.badge-acknowledged { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.badge-resolved { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+.badge-overdue { background: var(--danger); color: #fff; }
+.chip-ok { background: var(--ok-bg); color: var(--ok); }
+.chip-bad { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+.chip-unknown { background: var(--unknown-bg); color: var(--unknown); border-style: dashed; border-color: var(--unknown); }
+.chip-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+
+/* ---------- panels ---------- */
+.panel {
+  background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius);
+  padding: 20px 22px;
+}
+.panel h2 { font-size: 1.15rem; margin-bottom: 12px; }
+
+/* ---------- mock controls ---------- */
+.mock-controls {
+  margin: 24px auto; max-width: 1100px; padding: 16px 20px;
+  border: 2px dashed var(--unknown); border-radius: var(--radius); background: var(--unknown-bg);
+}
+.mock-controls h2 { font-size: 1rem; margin-bottom: 10px; }
+.mock-controls .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+/* =====================================================================
+   Patient view
+   ===================================================================== */
+.patient main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 40px; display: grid; gap: 22px; }
+.patient-header {
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+  padding: 16px 24px; background: var(--surface); border-bottom: 2px solid var(--border);
+  font-size: 1.25rem; font-weight: 700;
+}
+.env-mini { font-weight: 500; font-size: 1.05rem; color: var(--muted); }
+.env-mini.stale { color: var(--warn); font-weight: 700; }
+
+.state-panel {
+  border-radius: 22px; padding: 36px 32px; text-align: center; border: 4px solid var(--accent);
+  background: var(--surface);
+}
+.state-icon { font-size: clamp(3rem, 9vw, 5.5rem); line-height: 1; margin-bottom: 8px; }
+.state-panel h1 { font-size: clamp(2.2rem, 6vw, 4rem); font-weight: 800; }
+.state-panel p { font-size: clamp(1.25rem, 3vw, 1.8rem); margin: 12px 0 0; }
+.state-ready { border-color: var(--accent); }
+.state-recognizing { border-color: var(--info); background: var(--info-bg); color: var(--info); }
+.state-sent { border-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
+.state-rejected { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.state-offline { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.state-connecting { border-color: var(--unknown); background: var(--unknown-bg); color: var(--unknown); }
+
+.hold-progress {
+  height: 28px; margin: 22px auto 0; max-width: 560px; border-radius: 999px;
+  background: #ffffff; border: 3px solid currentColor; overflow: hidden;
+}
+.hold-bar { height: 100%; width: 0; background: currentColor; transition: width 0.3s linear; }
+
+.last-request h2, .guide h2 { font-size: 1.5rem; margin-bottom: 14px; }
+.last-type { font-size: 1.9rem; font-weight: 800; display: flex; align-items: center; gap: 12px; }
+.last-msg { font-size: 1.35rem; margin: 8px 0 16px; }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.steps li {
+  padding: 14px 10px; border-radius: 12px; text-align: center; font-weight: 700; font-size: 1.1rem;
+  border: 3px solid var(--border); color: var(--muted); background: var(--surface);
+}
+.steps li.done { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
+.steps li.current { border-color: var(--text); color: var(--text); background: #fff7d6; }
+
+.guide-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.guide-list li {
+  background: var(--surface); border: 3px solid var(--border); border-radius: var(--radius);
+  padding: 20px 14px; text-align: center;
+}
+.guide-icon { font-size: clamp(3rem, 8vw, 4.5rem); line-height: 1.1; }
+.guide-gesture { font-size: 1.2rem; font-weight: 700; margin-top: 8px; color: var(--muted); }
+.guide-means { font-size: 1.5rem; font-weight: 800; margin-top: 4px; }
+
+/* =====================================================================
+   Nurse view
+   ===================================================================== */
+.nurse-header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 24px; background: var(--surface); border-bottom: 2px solid var(--border);
+}
+.nurse-header h1 { font-size: 1.5rem; margin-right: auto; }
+.health { display: flex; flex-wrap: wrap; gap: 8px; }
+.nurse-main {
+  max-width: 1300px; margin: 0 auto; padding: 22px 24px 40px;
+  display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 24px; align-items: start;
+}
+.nurse-main h2 { font-size: 1.3rem; }
+.section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.count { font-weight: 800; color: var(--muted); }
+.request-list { display: grid; gap: 14px; }
+.side { display: grid; gap: 18px; }
+
+.empty {
+  padding: 32px; text-align: center; font-size: 1.15rem; color: var(--muted);
+  border: 2px dashed var(--border); border-radius: var(--radius); background: var(--surface);
+}
+
+.req-card {
+  background: var(--surface); border: 2px solid var(--border); border-left: 10px solid var(--border);
+  border-radius: 0 var(--radius) var(--radius) 0; padding: 16px 20px; display: grid; gap: 8px;
+}
+.req-card.status-new { border-left-color: var(--danger); }
+.req-card.status-acknowledged { border-left-color: var(--warn); }
+.req-card.overdue { border-color: var(--danger); border-left-color: var(--danger); background: #fff5f4; }
+.req-card.fresh { animation: fresh 1.2s ease-out 2; }
+@keyframes fresh { 0% { box-shadow: 0 0 0 0 rgba(168, 35, 27, 0.55); } 100% { box-shadow: 0 0 0 14px rgba(168, 35, 27, 0); } }
+.req-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.req-icon { font-size: 2.4rem; line-height: 1; }
+.req-type { font-size: 1.4rem; font-weight: 800; }
+.req-room { font-size: 1rem; color: var(--muted); font-weight: 600; }
+.req-badges { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.req-meta { font-size: 1.02rem; }
+.req-wait { font-weight: 700; }
+.req-env { font-size: 1rem; padding: 8px 12px; border-radius: 10px; background: var(--info-bg); color: var(--info); }
+.req-env.stale { background: var(--warn-bg); color: var(--warn); font-weight: 700; }
+.req-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.req-error { margin: 0; color: var(--danger); font-weight: 700; }
+
+.env-big { display: flex; gap: 28px; flex-wrap: wrap; }
+.env-value { font-size: 2.2rem; font-weight: 800; }
+.env-label { color: var(--muted); font-weight: 600; }
+.env-note { margin: 10px 0 0; font-size: 0.92rem; color: var(--muted); }
+.env-age { margin-top: 8px; font-weight: 600; }
+.env-age.stale { color: var(--warn); font-weight: 800; }
+
+.insights-table { width: 100%; border-collapse: collapse; font-size: 0.98rem; }
+.insights-table th, .insights-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+.insights-table th { color: var(--muted); font-weight: 700; }
+.insight-callout { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--warn-bg); color: var(--warn); font-weight: 700; }
+.insight-note { margin: 10px 0 0; font-size: 0.92rem; color: var(--muted); }
+
+.resolved-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.resolved-list li { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.98rem; }
+
+@media (max-width: 900px) {
+  .nurse-main { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .guide-list { grid-template-columns: 1fr; }
+  .steps li { font-size: 0.95rem; padding: 10px 6px; }
+  .state-panel { padding: 26px 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
