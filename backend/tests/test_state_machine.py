@@ -103,6 +103,37 @@ def test_prediction_gap_resets_the_hold():
     assert feed(machine, "paper", 0.9, 4500, 0) == ["assistance"]
 
 
+def test_silence_counts_as_neutral():
+    # A producer that sends nothing when no hand is visible must not leave
+    # the machine locked forever.
+    machine = GestureStateMachine()
+    assert feed(machine, "paper", 0.9, 0, 1500) == ["assistance"]
+    assert feed(machine, "paper", 0.9, 12000, 1400) == []  # needs a full hold
+    assert feed(machine, "paper", 0.9, 13500, 0) == ["assistance"]
+
+
+def test_short_silence_does_not_unlock():
+    machine = GestureStateMachine()
+    assert feed(machine, "paper", 0.9, 0, 1500) == ["assistance"]
+    assert feed(machine, "paper", 0.9, 2400, 3000) == []  # only 0.9 s silent
+
+
+def test_clock_going_backwards_while_locked_still_unlocks():
+    machine = GestureStateMachine()
+    assert feed(machine, "paper", 0.9, 500000, 1500) == ["assistance"]
+    assert feed(machine, "none", 0.9, 501600, 300) == []
+    # Producer restarts and its clock starts again from zero.
+    assert feed(machine, "none", 0.9, 0, 1000) == []
+    assert feed(machine, "paper", 0.9, 1100, 1500) == ["assistance"]
+
+
+def test_clock_going_backwards_mid_hold_restarts_the_hold():
+    machine = GestureStateMachine()
+    assert feed(machine, "paper", 0.9, 500000, 500) == []
+    assert feed(machine, "paper", 0.9, 0, 1400) == []
+    assert feed(machine, "paper", 0.9, 1500, 0) == ["assistance"]
+
+
 @pytest.mark.parametrize(
     "label, expected",
     [("paper", "assistance"), ("scissors", "water"), ("rock", "room_comfort")],

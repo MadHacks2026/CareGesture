@@ -7,7 +7,8 @@ This is the false-alert protection. The rules:
   4. After firing, nothing can fire again until the camera has seen
      "none" continuously for NEUTRAL_MS (the patient lowered their hand).
   5. If predictions stop arriving for more than MAX_GAP_MS (camera stall),
-     any hold in progress is thrown away.
+     or the timestamp goes backwards, any hold in progress is thrown away.
+  6. Complete silence for NEUTRAL_MS also counts as the neutral period.
 
 Time comes only from prediction.timestamp_ms, never the wall clock, so the
 behaviour is deterministic and easy to test.
@@ -43,11 +44,22 @@ class GestureStateMachine:
         """Feed one prediction. Returns a request type ("assistance",
         "water", "room_comfort") when a hold is confirmed, otherwise None."""
         ts = pred.timestamp_ms
-        gap = self._last_ts is not None and ts - self._last_ts > MAX_GAP_MS
+        # Time since the previous prediction (0 for the very first one).
+        elapsed = 0 if self._last_ts is None else ts - self._last_ts
         self._last_ts = ts
+        # A stall, or a clock that jumped backwards (producer restarted):
+        # either way we cannot trust any timer that was running.
+        gap = elapsed > MAX_GAP_MS or elapsed < 0
 
         is_none = pred.label == "none"
         is_valid = not is_none and pred.confidence >= MIN_CONFIDENCE
+
+        if self.state == LOCKED and elapsed >= NEUTRAL_MS:
+            # No predictions at all for the whole neutral period. Some
+            # producers send nothing when no hand is visible, so silence
+            # counts as neutral. Unlock and handle this prediction normally;
+            # it still needs its own full hold to fire.
+            self._reset()
 
         if self.state == LOCKED:
             # Only an unbroken run of "none" unlocks. A low-confidence gesture
