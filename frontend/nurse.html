@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Nurse station</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body class="nurse">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -27,6 +27,7 @@
         <span id="active-count" class="count"></span>
       </div>
       <p id="notice" class="insight-callout" role="status" hidden></p>
+      <p id="sound-warning" class="insight-callout" role="status" hidden></p>
       <div id="active-list" class="request-list"></div>
       <p id="sr-announce" class="sr-only" aria-live="assertive"></p>
     </section>
@@ -46,6 +47,18 @@
       <section class="panel" aria-labelledby="resolved-title">
         <h2 id="resolved-title">Recently resolved</h2>
         <ol id="resolved-list" class="resolved-list"></ol>
+      </section>
+
+      <section class="panel" aria-labelledby="alerts-title">
+        <h2 id="alerts-title">Alert settings</h2>
+        <div class="alert-settings">
+          <label class="field"><span>Volume</span><input id="volume" type="range" min="10" max="100" step="5"></label>
+          <label class="check"><input id="speak" type="checkbox"><span>Speak requests aloud</span></label>
+          <div class="row">
+            <button id="mute-btn" class="btn btn-small" type="button" aria-pressed="false">Mute 5 min</button>
+            <button id="test-btn" class="btn btn-small" type="button">Test sound</button>
+          </div>
+        </div>
       </section>
     </aside>
   </main>
@@ -76,7 +89,6 @@
     let everConnected = false;
     let knownIds = null;
     const freshIds = new Set();
-    const overdueAlerted = new Set();
     const pending = new Set();
     const errors = new Map();
     let soundOn = false;
@@ -112,24 +124,174 @@
     }
 
     // ---------- alerts ----------
-    function beep(freq, ms) {
-      if (!soundOn || !audioCtx) return;
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.frequency.value = freq;
-      gain.gain.value = 0.15;
-      osc.connect(gain).connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + ms / 1000);
+    // Two distinct patterns so a nurse can tell them apart without looking:
+    //   chime  = a new request is waiting (repeats every 60 s until it is acknowledged)
+    //   urgent = a request is overdue (repeats every 20 s until it is acknowledged)
+    // Browsers only allow audio after a click or key press, so a saved "on" preference
+    // needs one tap after a reload. The button and a warning say so instead of failing silently.
+    const SOUND_KEY = 'caregesture_sound';
+    const NEW_REPEAT_MS = 60000;
+    const OVERDUE_REPEAT_MS = 20000;
+    const PATTERNS = {
+      chime: [[880, 0, 0.16], [1175, 0.2, 0.24]],
+      urgent: [[560, 0, 0.18], [560, 0.28, 0.18], [560, 0.56, 0.18], [420, 0.9, 0.3]],
+      test: [[660, 0, 0.14]],
+    };
+    const lastAlert = new Map();
+    const spoken = new Set();
+    let muteUntil = 0;
+    let volume = 0.6;
+    let speakOn = false;
+    try {
+      const v = Number(localStorage.getItem('caregesture_volume'));
+      if (v >= 0.1 && v <= 1) volume = v;
+      speakOn = localStorage.getItem('caregesture_speak') === '1';
+    } catch (err) { /* defaults */ }
+    const muted = () => Date.now() < muteUntil;
+
+    try { soundOn = localStorage.getItem(SOUND_KEY) === '1'; } catch (err) { soundOn = false; }
+
+    function ensureAudio() {
+      if (!soundOn) return;
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        audioCtx = new Ctx();
+        audioCtx.addEventListener('statechange', updateSoundUI);
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(updateSoundUI, () => {});
+    }
+
+    function soundActive() {
+      return soundOn && !!audioCtx && audioCtx.state === 'running';
+    }
+
+    function play(name) {
+      if (!soundActive() || muted()) return;
+      const t0 = audioCtx.currentTime;
+      PATTERNS[name].forEach(([freq, offset, dur]) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        // Short ramps avoid the click a hard start or stop makes.
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.linearRampToValueAtTime(0.34 * volume, t0 + offset + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + offset + dur);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + dur + 0.02);
+      });
+    }
+
+    function speak(list) {
+      if (!speakOn || !('speechSynthesis' in window) || !list.length) return;
+      const text = list.length > 1 ? list.length + ' requests. ' + list.join('. ') : list[0];
+      const ut = new SpeechSynthesisUtterance(text);
+      ut.rate = 0.95;
+      ut.volume = volume;
+      // Let the tone finish first, then say what it was.
+      setTimeout(() => { window.speechSynthesis.cancel(); window.speechSynthesis.speak(ut); }, 1000);
+    }
+
+    function updateSoundUI() {
+      const btn = $('sound-toggle');
+      let label = 'Sound alerts: off';
+      if (soundOn) label = soundActive() ? 'Sound alerts: on' : 'Sound alerts: tap to activate';
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.setAttribute('aria-pressed', String(soundActive()));
+      const isMuted = muted();
+      const mb = $('mute-btn');
+      const mlabel = isMuted ? 'Unmute' : 'Mute 5 min';
+      if (mb.textContent !== mlabel) mb.textContent = mlabel;
+      mb.setAttribute('aria-pressed', String(isMuted));
+      // A nurse who assumes sound is on will miss a request, so say it plainly.
+      const waiting = requests.filter((r) => r.status === 'new').length;
+      const warn = $('sound-warning');
+      warn.hidden = !isMuted && (soundActive() || waiting === 0);
+      if (!warn.hidden) {
+        warn.textContent = isMuted
+          ? 'Alerts muted until ' + u.formatClock(muteUntil) + '. New requests still appear in the list.'
+          : soundOn
+            ? 'Sound is waiting for a tap. Click anywhere on this page to turn alerts on.'
+            : 'Sound alerts are off. New requests will arrive silently.';
+      }
     }
 
     $('sound-toggle').addEventListener('click', () => {
       soundOn = !soundOn;
-      if (soundOn && !audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      $('sound-toggle').textContent = 'Sound alerts: ' + (soundOn ? 'on' : 'off');
-      $('sound-toggle').setAttribute('aria-pressed', String(soundOn));
-      if (soundOn) beep(660, 120);
+      try { localStorage.setItem(SOUND_KEY, soundOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      lastAlert.clear();
+      if (soundOn) {
+        ensureAudio();
+        if (audioCtx) audioCtx.resume().then(() => { play('test'); updateSoundUI(); }, () => {});
+      }
+      updateSoundUI();
     });
+
+    // The first click or key press anywhere satisfies the browser's audio rule.
+    ['pointerdown', 'keydown'].forEach((evt) => document.addEventListener(evt, () => {
+      if (soundOn && !soundActive()) ensureAudio();
+    }, { passive: true }));
+
+    $('volume').value = Math.round(volume * 100);
+    $('volume').addEventListener('input', (ev) => { volume = Number(ev.target.value) / 100; });
+    $('volume').addEventListener('change', () => {
+      try { localStorage.setItem('caregesture_volume', String(volume)); } catch (err) { /* private mode */ }
+      play('chime'); // hear the new level
+    });
+    $('speak').checked = speakOn;
+    $('speak').addEventListener('change', (ev) => {
+      speakOn = ev.target.checked;
+      try { localStorage.setItem('caregesture_speak', speakOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      if (speakOn) speak(['Spoken alerts on']);
+    });
+    $('mute-btn').addEventListener('click', () => {
+      muteUntil = muted() ? 0 : Date.now() + 5 * 60000;
+      updateSoundUI();
+    });
+    $('test-btn').addEventListener('click', () => {
+      if (!soundOn) { $('sound-toggle').click(); return; }
+      ensureAudio();
+      play('chime');
+      speak(['Test alert']);
+    });
+
+    // A hidden tab cannot be seen, so make its title flash while requests are waiting.
+    let titleFlip = false;
+    function titleFor(n) {
+      return titleFlip && n ? '\uD83D\uDD14 ' + n + ' waiting' : (n ? '(' + n + ') ' : '') + 'CareGesture - Nurse station';
+    }
+    setInterval(() => {
+      const n = requests.filter((r) => r.status === 'new').length;
+      titleFlip = document.hidden && n > 0 ? !titleFlip : false;
+      document.title = titleFor(n);
+    }, 1000);
+
+    updateSoundUI();
+
+    function remind(now) {
+      requests.forEach((r) => { if (r.status !== 'new') lastAlert.delete(r.id); });
+      if (!soundActive() || muted()) return;
+      let pattern = null;
+      const phrases = [];
+      requests.forEach((r) => {
+        if (r.status !== 'new') return;
+        const overdue = isOverdue(r, now);
+        const last = lastAlert.get(r.id);
+        if (last === undefined || now - last >= (overdue ? OVERDUE_REPEAT_MS : NEW_REPEAT_MS)) {
+          lastAlert.set(r.id, now);
+          const key = r.id + (overdue ? ':overdue' : ':new');
+          if (!spoken.has(key)) {
+            spoken.add(key);
+            phrases.push((overdue ? 'Overdue. ' : '') + u.typeInfo(r.type).label + ', room ' + r.room_id);
+          }
+          if (overdue) pattern = 'urgent';
+          else if (pattern !== 'urgent') pattern = 'chime';
+        }
+      });
+      if (pattern) { play(pattern); speak(phrases); }
+    }
 
     function noticeChanges() {
       const ids = new Set(requests.map((r) => r.id));
@@ -138,19 +300,12 @@
           if (!knownIds.has(r.id) && r.status === 'new') {
             freshIds.add(r.id);
             setTimeout(() => freshIds.delete(r.id), 3000);
-            beep(880, 180);
             $('sr-announce').textContent = 'New ' + u.typeInfo(r.type).label + ' request from room ' + r.room_id;
           }
         });
       }
       knownIds = ids;
-      const now = Date.now();
-      requests.forEach((r) => {
-        if (isOverdue(r, now) && !overdueAlerted.has(r.id)) {
-          overdueAlerted.add(r.id);
-          beep(520, 400);
-        }
-      });
+      remind(Date.now());
     }
 
     function isOverdue(r, now) {
@@ -307,7 +462,7 @@
       }
       const newCount = active.filter((r) => r.status === 'new').length;
       $('active-count').textContent = active.length ? newCount + ' new · ' + active.length + ' open' : '';
-      document.title = (newCount ? '(' + newCount + ') ' : '') + 'CareGesture - Nurse station';
+      document.title = titleFor(newCount);
     }
 
     function renderEnvironment() {
@@ -391,6 +546,7 @@
     function render() {
       renderHealth();
       renderActive(false);
+      updateSoundUI();
       renderEnvironment();
       renderInsights();
       renderResolved();
@@ -409,7 +565,7 @@
         if (!btn) return;
         if (btn.dataset.mock === 'seed') api.mock.seedHistory();
         if (btn.dataset.mock === 'sensor') api.mock.setSensorOk(!api.mock.getFlags().sensorOk);
-        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; overdueAlerted.clear(); }
+        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; lastAlert.clear(); spoken.clear(); }
         sync();
       });
     }

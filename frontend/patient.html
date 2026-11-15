@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Patient</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body class="patient">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -18,6 +18,7 @@
     <span class="brand"><span class="brand-mark" aria-hidden="true"></span>CareGesture</span>
     <span class="room-tag">Room <span id="room-id"></span></span>
     <span id="env-mini" class="env-mini" aria-label="Room conditions"></span>
+    <button id="sound-toggle" class="btn btn-small" type="button" aria-pressed="false">Sound: off</button>
   </header>
 
   <main>
@@ -96,6 +97,69 @@
     let detectionFailures = 0;
 
     $('room-id').textContent = api.ROOM_ID;
+
+    // ---------- optional sound cues (off by default, remembered on this device) ----------
+    const SOUND_KEY = 'caregesture_patient_sound';
+    const CUES = {
+      tick: [[740, 0, 0.08]],
+      sent: [[660, 0, 0.16], [880, 0.2, 0.16], [1175, 0.4, 0.3]],
+      rejected: [[330, 0, 0.24]],
+      seen: [[880, 0, 0.16], [1175, 0.2, 0.3]],
+      resolved: [[1175, 0, 0.14], [880, 0.18, 0.14], [1175, 0.36, 0.3]],
+      test: [[660, 0, 0.14]],
+    };
+    const STATE_CUES = { recognizing: 'tick', sent: 'sent', rejected: 'rejected' };
+    let soundOn = false;
+    let audioCtx = null;
+    let lastKind = null;
+    let lastSeen = null;
+    try { soundOn = localStorage.getItem(SOUND_KEY) === '1'; } catch (err) { soundOn = false; }
+
+    function ensureAudio() {
+      if (!soundOn) return;
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        audioCtx = new Ctx();
+        audioCtx.addEventListener('statechange', updateSoundUI);
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(updateSoundUI, () => {});
+    }
+    function soundActive() { return soundOn && !!audioCtx && audioCtx.state === 'running'; }
+    function play(name) {
+      if (!soundActive()) return;
+      const t0 = audioCtx.currentTime;
+      CUES[name].forEach(([freq, offset, dur]) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.linearRampToValueAtTime(0.2, t0 + offset + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + offset + dur);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + dur + 0.02);
+      });
+    }
+    function updateSoundUI() {
+      const btn = $('sound-toggle');
+      const label = !soundOn ? 'Sound: off' : soundActive() ? 'Sound: on' : 'Sound: tap to activate';
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.setAttribute('aria-pressed', String(soundActive()));
+    }
+    $('sound-toggle').addEventListener('click', () => {
+      soundOn = !soundOn;
+      try { localStorage.setItem(SOUND_KEY, soundOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      if (soundOn) {
+        ensureAudio();
+        if (audioCtx) audioCtx.resume().then(() => { play('test'); updateSoundUI(); }, () => {});
+      }
+      updateSoundUI();
+    });
+    ['pointerdown', 'keydown'].forEach((evt) => document.addEventListener(evt, () => {
+      if (soundOn && !soundActive()) ensureAudio();
+    }, { passive: true }));
+    updateSoundUI();
 
     // ---------- optional local camera preview ----------
     let previewStream = null;
@@ -209,6 +273,10 @@
     }
 
     function setState(kind, icon, title, detail, progress) {
+      if (kind !== lastKind) {
+        lastKind = kind;
+        if (STATE_CUES[kind]) play(STATE_CUES[kind]);
+      }
       $('state-panel').className = 'state-panel state-' + kind;
       // icon is one of the fixed line icons or a gesture emoji, never user text.
       if ($('state-icon').dataset.icon !== icon) {
@@ -286,6 +354,10 @@
       const sig = r.id + ':' + r.status;
       if (el.dataset.sig === sig) return;
       el.dataset.sig = sig;
+      if (lastSeen && lastSeen.id === r.id && lastSeen.status !== r.status) {
+        play(r.status === 'resolved' ? 'resolved' : 'seen');
+      }
+      lastSeen = { id: r.id, status: r.status };
 
       const t = u.typeInfo(r.type);
       const messages = {

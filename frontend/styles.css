@@ -410,6 +410,13 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
 .resolved-list li:first-child { padding-top: 0; }
 .resolved-list li:last-child { border-bottom: 0; padding-bottom: 0; }
 
+.alert-settings { display: grid; gap: 14px; }
+.alert-settings .field { display: grid; gap: 6px; font-weight: 600; font-size: 0.95rem; }
+.alert-settings input[type="range"] { width: 100%; min-height: 28px; accent-color: var(--accent); }
+.alert-settings .check { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 0.95rem; min-height: 44px; }
+.alert-settings input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
+.alert-settings .row { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* =====================================================================
    Launcher
    ===================================================================== */
