@@ -12,7 +12,7 @@
  * Browser mock mode (?mock=1): an in-browser fake backend stored in localStorage. Every tab
  * in the same browser shares it, so patient.html and nurse.html work with no backend at all.
  *
- * URL options: ?mock=1  ?api=http://192.168.1.50:8000  ?room=01  ?overdue_s=180  ?demo=1  ?poll=1
+ * URL options: ?mock=1  ?api=http://192.168.1.50:8000  ?room=01  ?overdue_s=30 ?demo=1  ?poll=1
  */
 (function (global) {
   'use strict';
@@ -34,10 +34,10 @@
     const value = Number(params.get(name));
     return params.get(name) !== null && Number.isFinite(value) && value > 0 ? value : fallback;
   }
-  const OVERDUE_MS = Math.max(10, secondsParam('overdue_s', 180)) * 1000;
+  const OVERDUE_MS = Math.max(10, secondsParam('overdue_s', 30)) * 1000;
   // Demo thresholds, not clinical rules. A request nobody has acknowledged by this age is
   // escalated to the charge nurse station (nurse.html?station=charge).
-  const ESCALATE_MS = Math.max(OVERDUE_MS + 5000, secondsParam('escalate_s', 300) * 1000);
+  const ESCALATE_MS = Math.max(OVERDUE_MS + 5000, secondsParam('escalate_s', 60) * 1000);
   const FETCH_TIMEOUT_MS = 3000;
   const HOLD_MS = 1500;
 

@@ -48,8 +48,8 @@ Everything is simulated in the browser (localStorage, shared between tabs): held
 | `mock=1` | off | Browser-only mock backend, no server needed |
 | `poll=1` | off | Poll every second instead of using `/api/stream` |
 | `room=` | `01` | Room shown on the patient screen |
-| `overdue_s=` | `180` | Seconds before a new request is marked overdue (try `10` in a demo) |
-| `escalate_s=` | `300` | Seconds before an unanswered request is escalated to the charge nurse station (try `20` in a demo) |
+| `overdue_s=` | `30` | Seconds before a new request is marked overdue (try `10` in a demo) |
+| `escalate_s=` | `60` | Seconds before an unanswered request is escalated to the charge nurse station (try `20` in a demo) |
 | `station=charge` | off | Nurse page only: show just the escalated requests, as a second simulated station |
 
 ## How it uses `api.py`
@@ -98,8 +98,8 @@ The backend stores the code; the wording lives in `api_client.js` (`REPLIES`, `R
 | Level | Default age | What happens |
 | --- | --- | --- |
 | 1 New | 0 s | Normal card, chime every 60 s |
-| 2 Overdue | `overdue_s` (180 s) | Red card, urgent tone every 20 s |
-| 3 Escalated | `escalate_s` (300 s) | Dark red pulsing card, siren tone every 10 s, red banner, and the request appears on the charge nurse station (`nurse.html?station=charge`) |
+| 2 Overdue | `overdue_s` (30 s) | Red card, urgent tone every 20 s |
+| 3 Escalated | `escalate_s` (60 s) | Dark red pulsing card, siren tone every 10 s, red banner, and the request appears on the charge nurse station (`nurse.html?station=charge`) |
 
 Levels use the backend's `age_ms` (time since creation by the backend's own clock), so a device with a wrong clock cannot hide or fake an escalation and every station agrees. Without `age_ms` (the browser mock) it falls back to `created_at`. Acknowledging or replying at any level removes it from both stations. For a demo, open the nurse page and the charge page with `overdue_s=10&escalate_s=20` (the launcher has links), then make a gesture and wait.
 
