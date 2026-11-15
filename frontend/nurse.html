@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Nurse station</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body class="nurse">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -15,7 +15,7 @@
   </div>
 
   <header class="nurse-header">
-    <h1>CareGesture nurse station</h1>
+    <h1><span class="brand-mark" aria-hidden="true"></span><span>CareGesture <span class="h1-sub">nurse station</span></span></h1>
     <div id="health" class="health" aria-label="System health"></div>
     <button id="sound-toggle" class="btn btn-small" aria-pressed="false">Sound alerts: off</button>
   </header>
@@ -23,12 +23,12 @@
   <main class="nurse-main">
     <section aria-labelledby="active-title">
       <div class="section-head">
-        <h2 id="active-title">Active requests</h2>
+        <div><p class="eyebrow">Live queue</p><h2 id="active-title">Active requests</h2></div>
         <span id="active-count" class="count"></span>
       </div>
       <p id="notice" class="insight-callout" role="status" hidden></p>
       <div id="active-list" class="request-list"></div>
-      <p id="sr-announce" class="muted" aria-live="assertive" style="position:absolute;left:-9999px"></p>
+      <p id="sr-announce" class="sr-only" aria-live="assertive"></p>
     </section>
 
     <aside class="side">
@@ -60,7 +60,7 @@
     </div>
   </section>
 
-  <script src="api_client.js"></script>
+  <script src="api_client.js?v=9"></script>
   <script>
   (function () {
     'use strict';
@@ -201,8 +201,8 @@
     function chip(label, value) {
       const cls = value === true ? 'ok' : value === false ? 'bad' : 'unknown';
       const word = value === true ? 'OK' : value === false ? 'Offline' : 'Unknown';
-      const mark = value === true ? '✔' : value === false ? '✖' : '?';
-      return '<span class="chip chip-' + cls + '"><span aria-hidden="true">' + mark + '</span>' + label + ': ' + word + '</span>';
+      const mark = value === true ? api.ICONS.check : value === false ? api.ICONS.x : api.ICONS.help;
+      return '<span class="chip chip-' + cls + '">' + mark + label + ': ' + word + '</span>';
     }
 
     function renderHealth() {
@@ -254,21 +254,22 @@
       const err = errors.get(r.id);
       const sinceMs = r.status === 'new' ? r.created_ms : r.acknowledged_ms;
       const waitLabel = r.status === 'new' ? 'Waiting' : 'Acknowledged';
-      const waitText = sinceMs ? ' · <span class="req-wait">' + waitLabel + ' <span data-since="' + sinceMs + '">' +
+      const waitText = sinceMs ? '<span class="req-wait">' + waitLabel + ' <span data-since="' + sinceMs + '">' +
         u.formatDuration(now - sinceMs) + '</span></span>' : '';
       return '' +
         '<article class="req-card status-' + r.status + (overdue ? ' overdue' : '') + (freshIds.has(r.id) ? ' fresh' : '') + '"' +
         ' aria-label="' + u.escapeHtml(t.label + ' request, room ' + r.room_id + ', ' + r.status) + '">' +
           '<div class="req-top">' +
-            '<span class="req-icon" aria-hidden="true">' + t.icon + '</span>' +
+            '<span class="req-icon" aria-hidden="true">' + t.symbol + '</span>' +
             '<div><div class="req-type">' + u.escapeHtml(t.label) + '</div>' +
             '<div class="req-room">Room ' + u.escapeHtml(r.room_id) + ' · ' + u.escapeHtml(r.id) + '</div></div>' +
             '<div class="req-badges">' +
-              (overdue ? '<span class="badge badge-overdue">Overdue</span>' : '') +
-              '<span class="badge badge-' + r.status + '">' + (r.status === 'new' ? 'New' : 'Acknowledged') + '</span>' +
+              // Overdue already implies new, so one badge says it.
+              (overdue ? '<span class="badge badge-overdue">Overdue</span>'
+                : '<span class="badge badge-' + r.status + '">' + (r.status === 'new' ? 'New' : 'Acknowledged') + '</span>') +
             '</div>' +
           '</div>' +
-          '<div class="req-meta">Requested ' + u.formatClock(r.created_ms) + waitText + '</div>' +
+          '<div class="req-meta"><span>Requested ' + u.formatClock(r.created_ms) + '</span>' + waitText + '</div>' +
           envLine(r, now) +
           '<div class="req-actions">' +
             '<button class="' + btnClass + '" data-id="' + u.escapeHtml(r.id) + '" data-action="' + action + '"' +

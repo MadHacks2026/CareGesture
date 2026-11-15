@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Patient</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body class="patient">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -15,19 +15,38 @@
   </div>
 
   <header class="patient-header">
-    <span>Room <span id="room-id"></span></span>
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span>CareGesture</span>
+    <span class="room-tag">Room <span id="room-id"></span></span>
     <span id="env-mini" class="env-mini" aria-label="Room conditions"></span>
   </header>
 
   <main>
-    <section id="state-panel" class="state-panel state-connecting" aria-live="polite" aria-atomic="true">
-      <div id="state-icon" class="state-icon" aria-hidden="true"></div>
-      <h1 id="state-title">Connecting...</h1>
-      <p id="state-detail">Checking the camera and connection.</p>
-      <div id="hold-progress" class="hold-progress" role="progressbar" aria-label="Gesture hold progress"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
-        <div id="hold-bar" class="hold-bar"></div>
+    <section id="state-panel" class="state-panel state-connecting">
+      <div class="state-status" aria-live="polite" aria-atomic="true">
+        <div id="state-icon" class="state-icon" aria-hidden="true"></div>
+        <h1 id="state-title">Connecting...</h1>
+        <p id="state-detail">Checking the camera and connection.</p>
+        <div id="hold-progress" class="hold-progress" role="progressbar" aria-label="Gesture hold progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+          <div id="hold-bar" class="hold-bar"></div>
+        </div>
       </div>
+      <section class="camera-preview" aria-labelledby="camera-title">
+        <div class="camera-toolbar">
+          <div>
+            <h2 id="camera-title">Check your hand position</h2>
+            <p>Private preview on this device.</p>
+          </div>
+          <button id="camera-toggle" class="camera-toggle" type="button" aria-controls="camera-stage" aria-expanded="false">
+            <span>Preview camera</span>
+          </button>
+        </div>
+        <div id="camera-stage" class="camera-stage" hidden>
+          <video id="camera-video" autoplay muted playsinline aria-label="Live camera preview"></video>
+          <div class="camera-private"><span aria-hidden="true">●</span> Live on this device only</div>
+        </div>
+        <p id="camera-message" class="camera-message" role="status" hidden></p>
+      </section>
     </section>
 
     <section class="last-request panel" aria-labelledby="last-title">
@@ -36,7 +55,9 @@
     </section>
 
     <section class="guide" aria-labelledby="guide-title">
+      <p class="eyebrow">Three simple requests</p>
       <h2 id="guide-title">Hold one of these gestures steady for about 2 seconds</h2>
+      <p class="guide-hint">Face your palm toward the camera and keep your hand inside the frame.</p>
       <ul id="guide-list" class="guide-list"></ul>
     </section>
   </main>
@@ -58,7 +79,7 @@
     <p id="demo-error" class="req-error" role="alert" hidden></p>
   </section>
 
-  <script src="api_client.js"></script>
+  <script src="api_client.js?v=9"></script>
   <script>
   (function () {
     'use strict';
@@ -76,12 +97,72 @@
 
     $('room-id').textContent = api.ROOM_ID;
 
+    // ---------- optional local camera preview ----------
+    let previewStream = null;
+    const cameraToggle = $('camera-toggle');
+    const cameraStage = $('camera-stage');
+    const cameraVideo = $('camera-video');
+    const cameraMessage = $('camera-message');
+
+    function setToggle(icon, text) {
+      cameraToggle.innerHTML = '<span class="camera-toggle-icon" aria-hidden="true">' + icon + '</span><span>' + text + '</span>';
+    }
+    setToggle(api.ICONS.camera, 'Preview camera');
+
+    function stopPreview() {
+      if (previewStream) previewStream.getTracks().forEach((track) => track.stop());
+      previewStream = null;
+      cameraVideo.srcObject = null;
+      cameraStage.hidden = true;
+      setToggle(api.ICONS.camera, 'Preview camera');
+      cameraToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    cameraToggle.addEventListener('click', async () => {
+      cameraMessage.hidden = true;
+      if (previewStream) {
+        stopPreview();
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        cameraMessage.textContent = 'Camera preview is not supported in this browser.';
+        cameraMessage.hidden = false;
+        return;
+      }
+      cameraToggle.disabled = true;
+      cameraToggle.textContent = 'Opening camera...';
+      try {
+        previewStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        cameraVideo.srcObject = previewStream;
+        cameraStage.hidden = false;
+        setToggle(api.ICONS.x, 'Close preview');
+        cameraToggle.setAttribute('aria-expanded', 'true');
+      } catch (err) {
+        const busy = err && (err.name === 'NotReadableError' || err.name === 'AbortError');
+        const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+        cameraMessage.textContent = busy
+          ? 'The camera is already in use. Close another camera app or use the backend camera feed.'
+          : denied
+            ? 'Camera access was not allowed. Enable it in your browser settings to use the preview.'
+            : 'The camera could not be opened. Check that a camera is connected.';
+        cameraMessage.hidden = false;
+        stopPreview();
+      } finally {
+        cameraToggle.disabled = false;
+      }
+    });
+
+    window.addEventListener('pagehide', stopPreview);
+
     // ---------- gesture guide (static) ----------
     $('guide-list').innerHTML = Object.values(api.REQUEST_TYPES).map((t) =>
       '<li>' +
         '<div class="guide-icon" role="img" aria-label="' + u.escapeHtml(t.gestureName) + '">' + t.icon + '</div>' +
         '<div class="guide-gesture">' + u.escapeHtml(t.gestureName) + '</div>' +
-        '<div class="guide-means">' + u.escapeHtml(t.label) + '</div>' +
+        '<div class="guide-means">' + t.symbol + u.escapeHtml(t.label) + '</div>' +
       '</li>'
     ).join('');
 
@@ -129,7 +210,11 @@
 
     function setState(kind, icon, title, detail, progress) {
       $('state-panel').className = 'state-panel state-' + kind;
-      $('state-icon').textContent = icon;
+      // icon is one of the fixed line icons or a gesture emoji, never user text.
+      if ($('state-icon').dataset.icon !== icon) {
+        $('state-icon').innerHTML = icon;
+        $('state-icon').dataset.icon = icon;
+      }
       if ($('state-title').textContent !== title) $('state-title').textContent = title;
       if ($('state-detail').textContent !== detail) $('state-detail').textContent = detail;
       const hp = $('hold-progress');
@@ -149,11 +234,11 @@
       $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
 
       if (!everConnected && failures < 3) {
-        setState('connecting', '…', 'Connecting...', 'Checking the camera and connection.');
+        setState('connecting', api.ICONS.dots, 'Connecting...', 'Checking the camera and connection.');
         return;
       }
       if (!connected()) {
-        setState('offline', '!', 'Gesture requests unavailable', 'The connection was lost. Please use your call button.');
+        setState('offline', api.ICONS.alert, 'Gesture requests unavailable', 'The connection was lost. Please use your call button.');
         return;
       }
       // Unknown (null) camera or model status is treated as unavailable, never as working.
@@ -161,7 +246,7 @@
         !(detection && detection.state === 'unavailable');
       if (!monitoring) {
         const why = status && status.camera_ok === false ? 'The camera is offline.' : 'Gesture detection is not running.';
-        setState('offline', '!', 'Monitoring unavailable', why + ' Gesture requests will not be sent. Please use your call button.');
+        setState('offline', api.ICONS.alert, 'Monitoring unavailable', why + ' Gesture requests will not be sent. Please use your call button.');
         return;
       }
 
@@ -173,13 +258,13 @@
         setState('recognizing', t ? t.icon : '', t ? 'Recognizing: ' + t.label : 'Recognizing...',
           'Keep holding steady.', detection.progress === null ? 0 : detection.progress);
       } else if (detection && detection.state === 'rejected') {
-        setState('rejected', '?', 'Not recognized', 'Nothing was sent. Hold the gesture steady and try again.');
+        setState('rejected', api.ICONS.retry, 'Not recognized', 'Nothing was sent. Hold the gesture steady and try again.');
       } else if ((detection && detection.state === 'sent') || justSent) {
         const t = latest ? u.typeInfo(latest.type) : null;
-        setState('sent', '✔', t ? t.patientText : 'Request sent', 'Your request was sent to the nurse.');
+        setState('sent', api.ICONS.check, t ? t.patientText : 'Request sent', 'Your request was sent to the nurse.');
       } else {
         // Neutral icon on purpose: a waving hand would teach patients to wave, which is ignored.
-        setState('ready', '◎', 'Ready', 'Show a gesture to the camera to ask for help.');
+        setState('ready', api.ICONS.target, 'Ready', 'Show a gesture to the camera to ask for help.');
       }
     }
 
@@ -213,14 +298,13 @@
       const idx = order.indexOf(r.status);
       const steps = labels.map((label, i) => {
         const cls = i < idx ? 'done' : i === idx ? (r.status === 'resolved' ? 'done' : 'current') : '';
-        const mark = i <= idx ? '✔ ' : '';
-        return '<li class="' + cls + '"' + (i === idx ? ' aria-current="step"' : '') + '>' + mark + labels[i] + '</li>';
+        return '<li class="' + cls + '"' + (i === idx ? ' aria-current="step"' : '') + '>' + labels[i] + '</li>';
       }).join('');
 
       el.innerHTML =
-        '<div class="last-type"><span aria-hidden="true">' + t.icon + '</span>' + u.escapeHtml(t.label) + '</div>' +
+        '<div class="last-type"><span class="type-symbol" aria-hidden="true">' + t.symbol + '</span>' + u.escapeHtml(t.label) + '</div>' +
         '<p class="last-msg">' + messages[r.status] + ' <span class="muted">Sent at ' + u.formatClock(r.created_ms) + '.</span></p>' +
-        '<ol class="steps" aria-label="Request progress">' + steps + '</ol>';
+        '<ol class="steps steps-' + Math.max(idx, 0) + '" aria-label="Request progress">' + steps + '</ol>';
     }
 
     function renderEnvironment() {

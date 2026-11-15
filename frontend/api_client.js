@@ -31,10 +31,31 @@
   const FETCH_TIMEOUT_MS = 3000;
   const HOLD_MS = 1500;
 
+  // Line icons (24x24, drawn with the current text colour). Fixed strings, safe to insert as HTML.
+  function svgIcon(paths) {
+    return '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths + '</svg>';
+  }
+  const ICONS = {
+    bell: svgIcon('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
+    droplet: svgIcon('<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>'),
+    thermometer: svgIcon('<path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>'),
+    check: svgIcon('<path d="M20 6 9 17l-5-5"/>'),
+    alert: svgIcon('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+    retry: svgIcon('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'),
+    target: svgIcon('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>'),
+    dots: svgIcon('<path d="M5 12h.01"/><path d="M12 12h.01"/><path d="M19 12h.01"/>'),
+    x: svgIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+    help: svgIcon('<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>'),
+    camera: svgIcon('<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/>'),
+  };
+
+  // icon = the hand gesture (emoji, so patients see the real hand shape).
+  // symbol = what the request is about (line icon).
   const REQUEST_TYPES = {
-    assistance: { label: 'Assistance', patientText: 'Assistance requested', gesture: 'paper', gestureName: 'Open palm', icon: '✋' },
-    water: { label: 'Water', patientText: 'Water requested', gesture: 'scissors', gestureName: 'Two fingers', icon: '✌️' },
-    room_comfort: { label: 'Room comfort', patientText: 'Room comfort requested', gesture: 'rock', gestureName: 'Closed fist', icon: '✊' },
+    assistance: { label: 'Assistance', patientText: 'Assistance requested', gesture: 'paper', gestureName: 'Open palm', icon: '✋', symbol: ICONS.bell },
+    water: { label: 'Water', patientText: 'Water requested', gesture: 'scissors', gestureName: 'Two fingers', icon: '✌️', symbol: ICONS.droplet },
+    room_comfort: { label: 'Room comfort', patientText: 'Room comfort requested', gesture: 'rock', gestureName: 'Closed fist', icon: '✊', symbol: ICONS.thermometer },
   };
   const GESTURE_TO_TYPE = { paper: 'assistance', scissors: 'water', rock: 'room_comfort' };
   const STATUSES = ['new', 'acknowledged', 'resolved'];
@@ -142,7 +163,7 @@
   }
 
   function typeInfo(type) {
-    return REQUEST_TYPES[type] || { label: type, patientText: type, gesture: '', gestureName: '', icon: '' };
+    return REQUEST_TYPES[type] || { label: type, patientText: type, gesture: '', gestureName: '', icon: '', symbol: '' };
   }
 
   // ---------------------------------------------------------------- real backend
@@ -511,6 +532,7 @@
     getStatus: api.getStatus,
     getDetection: api.getDetection,
     mock: MOCK ? mockControls : null,
+    ICONS,
     util: { formatClock, formatDuration, escapeHtml, typeInfo, readingAgeMs, isEnvironmentStale },
   };
 })(window);
