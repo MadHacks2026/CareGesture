@@ -435,7 +435,7 @@
       const attempts = detection ? detection.failed_attempts_recent : null;
       if (attempts !== null && attempts !== undefined) {
         const cls = attempts >= 3 ? 'warn' : 'ok';
-        html += '<span class="chip chip-' + cls + '">Unrecognized attempts (10 min): ' + attempts + '</span>';
+        html += '<span class="chip chip-' + cls + '">Unrecognized attempts (5 min):' + attempts + '</span>';
       }
       $('health').innerHTML = html;
       $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
