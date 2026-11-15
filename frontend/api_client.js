@@ -499,10 +499,53 @@
     },
     reset() {
       mockSave(mockDefault());
+      clearTemperatureHistory();
     },
   };
 
   const api = MOCK ? mockApi : realApi;
+
+  // ---------------------------------------------------------------- temperature history
+
+  const TEMP_LOG_KEY = 'caregesture_temp_log_' + ROOM_ID;
+  const TEMP_LOG_MAX = 120;         // keep the last 120 samples
+  const TEMP_LOG_MIN_STEP_MS = 900; // avoid duplicate entries on rapid manual refresh()
+
+  function getTemperatureHistory() {
+    try {
+      const raw = global.localStorage.getItem(TEMP_LOG_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function recordTemperature(env) {
+    const now = Date.now();
+    if (!env || isEnvironmentStale(env, now) || env.temperature_c === null) return;
+    const history = getTemperatureHistory();
+    const last = history[history.length - 1];
+    if (last && now - last.t < TEMP_LOG_MIN_STEP_MS) return;
+
+    history.push({ t: now, c: env.temperature_c });
+    if (history.length > TEMP_LOG_MAX) {
+      history.splice(0, history.length - TEMP_LOG_MAX);
+    }
+    try {
+      global.localStorage.setItem(TEMP_LOG_KEY, JSON.stringify(history));
+    } catch (err) {
+      // Ignore storage quota errors
+    }
+  }
+
+  function clearTemperatureHistory() {
+    try {
+      global.localStorage.removeItem(TEMP_LOG_KEY);
+    } catch (err) {
+      // Ignore
+    }
+  }
 
   // ---------------------------------------------------------------- live updates
   //
@@ -526,9 +569,16 @@
     const handle = { mode: 'poll', refresh: null };
     let polling = false;
 
+    function deliver(snap) {
+      if (snap && snap.environment !== undefined) {
+        recordTemperature(snap.environment);
+      }
+      onSnapshot(snap);
+    }
+
     async function refresh() {
       try {
-        onSnapshot(await pollOnce());
+        deliver(await pollOnce());
       } catch (err) {
         onFail(err);
       }
@@ -564,7 +614,7 @@
       } catch (err) {
         return;
       }
-      onSnapshot({
+      deliver({
         requests: (data.requests || []).map(normalizeRequest),
         environment: data.environment ? normalizeEnvironment(data.environment) : undefined,
         status: normalizeStatus(data.status),
@@ -610,6 +660,8 @@
     updateRequest: api.updateRequest,
     getEnvironment: api.getEnvironment,
     getStatus: api.getStatus,
+    getTemperatureHistory,
+    clearTemperatureHistory,
     getDetection: api.getDetection,
     mock: MOCK ? mockControls : null,
     ICONS,
