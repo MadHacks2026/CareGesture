@@ -23,11 +23,21 @@
   const FORCE_POLL = params.get('poll') === '1';     // skip the event stream, poll instead
   const STREAM_SILENCE_MS = 3500;                    // no snapshot for this long = connection problem
   const API_BASE = (params.get('api') || '').replace(/\/+$/, '');
-  const ROOM_ID = params.get('room') || '01';
+  // The real backend's room is "room-101"; the browser mock uses "01".
+  const ROOM_ID = params.get('room') || (MOCK ? '01' : 'room-101');
   const POLL_MS = 1000;
   const DETECTION_POLL_MS = 300;
   const STALE_MS = 10000;
-  const OVERDUE_MS = Math.max(10, Number(params.get('overdue_s') || 180)) * 1000;
+  // A missing, zero or non-numeric value falls back to the default instead of becoming NaN,
+  // which would silently switch overdue and escalation off.
+  function secondsParam(name, fallback) {
+    const value = Number(params.get(name));
+    return params.get(name) !== null && Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+  const OVERDUE_MS = Math.max(10, secondsParam('overdue_s', 180)) * 1000;
+  // Demo thresholds, not clinical rules. A request nobody has acknowledged by this age is
+  // escalated to the charge nurse station (nurse.html?station=charge).
+  const ESCALATE_MS = Math.max(OVERDUE_MS + 5000, secondsParam('escalate_s', 300) * 1000);
   const FETCH_TIMEOUT_MS = 3000;
   const HOLD_MS = 1500;
 
@@ -58,6 +68,22 @@
     room_comfort: { label: 'Room comfort', patientText: 'Room comfort requested', gesture: 'rock', gestureName: 'Closed fist', icon: '✊', symbol: ICONS.thermometer },
   };
   const GESTURE_TO_TYPE = { paper: 'assistance', scissors: 'water', rock: 'room_comfort' };
+
+  // Preset nurse replies. The backend stores the code; the wording lives here.
+  // label = nurse button, patientText = what the patient reads. Presets only, never free text.
+  // No reply promises a time: a wrong estimate is worse than none.
+  const REPLIES = {
+    on_my_way: { label: 'On my way', patientText: 'A nurse is on the way.' },
+    helping_another_patient: { label: 'Helping another patient', patientText: 'A nurse is helping another patient. Please wait.' },
+    bringing_water: { label: 'Bringing water', patientText: 'A nurse is bringing your water.' },
+    adjusting_room: { label: 'Adjusting the room', patientText: 'A nurse is adjusting the room.' },
+    use_call_button: { label: 'Use call button', patientText: 'Please use your call button.' },
+  };
+  const REPLY_OPTIONS = {
+    assistance: ['on_my_way', 'helping_another_patient', 'use_call_button'],
+    water: ['bringing_water', 'helping_another_patient'],
+    room_comfort: ['adjusting_room', 'helping_another_patient'],
+  };
   const STATUSES = ['new', 'acknowledged', 'resolved'];
 
   // ---------------------------------------------------------------- helpers
@@ -89,6 +115,12 @@
       created_ms: toMs(created),
       acknowledged_ms: toMs(r.acknowledged_at),
       resolved_ms: toMs(r.resolved_at),
+      reply: typeof r.reply === 'string' && r.reply ? r.reply : null,
+      reply_ms: toMs(r.reply_at),
+      age_ms: num(r.age_ms),
+      // When this request was created on THIS device's clock. The backend's age_ms is trusted over
+      // created_at, because the UNO Q and the viewing device may disagree on the time.
+      local_created_ms: num(r.age_ms) !== null ? Date.now() - r.age_ms : toMs(created),
       confidence: num(r.confidence),
       environment: r.environment ? normalizeEnvironment(r.environment) : null,
     };
@@ -162,6 +194,11 @@
     return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // "room-101" reads as "101" wherever the UI already says "Room".
+  function roomLabel(id) {
+    return String(id === undefined || id === null ? '' : id).replace(/^room[-_ ]?/i, '');
+  }
+
   function typeInfo(type) {
     return REQUEST_TYPES[type] || { label: type, patientText: type, gesture: '', gestureName: '', icon: '', symbol: '' };
   }
@@ -178,6 +215,7 @@
       if (!res.ok) {
         const err = new Error('HTTP ' + res.status + ' on ' + path);
         err.status = res.status;
+        try { err.detail = (await res.json()).detail; } catch (e) { err.detail = null; }
         throw err;
       }
       if (res.status === 204) return null;
@@ -198,6 +236,11 @@
     async updateRequest(id, status) {
       if (!['acknowledged', 'resolved'].includes(status)) throw new Error('Invalid status ' + status);
       const data = await fetchJSON('/api/requests/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ status }) });
+      return data ? normalizeRequest(data) : null;
+    },
+    async replyRequest(id, code) {
+      if (!REPLIES[code]) throw new Error('Invalid reply ' + code);
+      const data = await fetchJSON('/api/requests/' + encodeURIComponent(id) + '/reply', { method: 'POST', body: JSON.stringify({ reply: code }) });
       return data ? normalizeRequest(data) : null;
     },
     async getEnvironment() {
@@ -284,6 +327,8 @@
         created_at: new Date(now).toISOString(),
         acknowledged_at: null,
         resolved_at: null,
+        reply: null,
+        reply_at: null,
         confidence: Math.round((0.86 + Math.random() * 0.12) * 100) / 100,
         environment: type === 'room_comfort' ? mockEnv(state, now) : null,
       },
@@ -347,6 +392,32 @@
         req.status = status;
         if (status === 'acknowledged') req.acknowledged_at = new Date(now).toISOString();
         if (status === 'resolved') req.resolved_at = new Date(now).toISOString();
+        return normalizeRequest(req);
+      });
+    },
+    // Mirrors the backend: replying to a new request also acknowledges it; resolved is closed.
+    async replyRequest(id, code) {
+      await sleep(150);
+      return mockTransaction((s, now) => {
+        const req = s.requests.find((r) => r.id === id);
+        if (!req) {
+          const err = new Error('Not found');
+          err.status = 404;
+          err.detail = 'request not found';
+          throw err;
+        }
+        if (req.status === 'resolved' || !REPLIES[code]) {
+          const err = new Error(req.status === 'resolved' ? 'Already resolved' : 'Invalid reply');
+          err.status = req.status === 'resolved' ? 409 : 422;
+          throw err;
+        }
+        const iso = new Date(now).toISOString();
+        if (req.status === 'new') {
+          req.status = 'acknowledged';
+          req.acknowledged_at = iso;
+        }
+        req.reply = code;
+        req.reply_at = iso;
         return normalizeRequest(req);
       });
     },
@@ -525,7 +596,11 @@
     DETECTION_POLL_MS,
     STALE_MS,
     OVERDUE_MS,
+    ESCALATE_MS,
     REQUEST_TYPES,
+    REPLIES,
+    REPLY_OPTIONS,
+    replyRequest: api.replyRequest,
     getRequests: api.getRequests,
     updateRequest: api.updateRequest,
     getEnvironment: api.getEnvironment,
@@ -533,6 +608,6 @@
     getDetection: api.getDetection,
     mock: MOCK ? mockControls : null,
     ICONS,
-    util: { formatClock, formatDuration, escapeHtml, typeInfo, readingAgeMs, isEnvironmentStale },
+    util: { formatClock, formatDuration, escapeHtml, typeInfo, readingAgeMs, isEnvironmentStale, roomLabel },
   };
 })(window);

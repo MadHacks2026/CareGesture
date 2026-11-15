@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Nurse station</title>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body class="nurse">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -14,8 +14,10 @@
     Demo mode: simulated data. Fictional rooms only. Not a clinical nurse-call system.
   </div>
 
+  <div id="esc-banner" class="banner banner-danger" role="alert" hidden></div>
+
   <header class="nurse-header">
-    <h1><span class="brand-mark" aria-hidden="true"></span><span>CareGesture <span class="h1-sub">nurse station</span></span></h1>
+    <h1><span class="brand-mark" aria-hidden="true"></span><span>CareGesture <span id="station-name" class="h1-sub">nurse station</span></span></h1>
     <div id="health" class="health" aria-label="System health"></div>
     <button id="sound-toggle" class="btn btn-small" aria-pressed="false">Sound alerts: off</button>
   </header>
@@ -23,7 +25,7 @@
   <main class="nurse-main">
     <section aria-labelledby="active-title">
       <div class="section-head">
-        <div><p class="eyebrow">Live queue</p><h2 id="active-title">Active requests</h2></div>
+        <div><p id="queue-eyebrow" class="eyebrow">Live queue</p><h2 id="active-title">Active requests</h2></div>
         <span id="active-count" class="count"></span>
       </div>
       <p id="notice" class="insight-callout" role="status" hidden></p>
@@ -73,7 +75,7 @@
     </div>
   </section>
 
-  <script src="api_client.js?v=9"></script>
+  <script src="api_client.js?v=11"></script>
   <script>
   (function () {
     'use strict';
@@ -93,8 +95,17 @@
     const errors = new Map();
     let soundOn = false;
     let audioCtx = null;
+    // ?station=charge shows only escalated requests, as a second, simulated nurse station.
+    const CHARGE = new URLSearchParams(window.location.search).get('station') === 'charge';
+    const escSeen = new Set();
 
-    $('room-id').textContent = api.ROOM_ID;
+    $('room-id').textContent = u.roomLabel(api.ROOM_ID);
+    if (CHARGE) {
+      document.body.classList.add('charge');
+      $('station-name').textContent = 'charge nurse';
+      $('queue-eyebrow').textContent = 'Escalated queue';
+      $('active-title').textContent = 'Escalated requests';
+    }
 
     // ---------- live updates ----------
     function onSnapshot(snap) {
@@ -127,14 +138,17 @@
     // Two distinct patterns so a nurse can tell them apart without looking:
     //   chime  = a new request is waiting (repeats every 60 s until it is acknowledged)
     //   urgent = a request is overdue (repeats every 20 s until it is acknowledged)
+    //   escalated = nobody answered; also alerting the charge nurse (repeats every 10 s)
     // Browsers only allow audio after a click or key press, so a saved "on" preference
     // needs one tap after a reload. The button and a warning say so instead of failing silently.
     const SOUND_KEY = 'caregesture_sound';
     const NEW_REPEAT_MS = 60000;
     const OVERDUE_REPEAT_MS = 20000;
+    const ESCALATED_REPEAT_MS = 10000;
     const PATTERNS = {
       chime: [[880, 0, 0.16], [1175, 0.2, 0.24]],
       urgent: [[560, 0, 0.18], [560, 0.28, 0.18], [560, 0.56, 0.18], [420, 0.9, 0.3]],
+      escalated: [[700, 0, 0.16], [500, 0.2, 0.16], [700, 0.4, 0.16], [500, 0.6, 0.16], [700, 0.8, 0.16], [500, 1.0, 0.32]],
       test: [[660, 0, 0.14]],
     };
     const lastAlert = new Map();
@@ -206,15 +220,16 @@
       if (mb.textContent !== mlabel) mb.textContent = mlabel;
       mb.setAttribute('aria-pressed', String(isMuted));
       // A nurse who assumes sound is on will miss a request, so say it plainly.
-      const waiting = requests.filter((r) => r.status === 'new').length;
+      const waiting = watched(Date.now()).length;
       const warn = $('sound-warning');
       warn.hidden = !isMuted && (soundActive() || waiting === 0);
       if (!warn.hidden) {
-        warn.textContent = isMuted
+        const text = isMuted
           ? 'Alerts muted until ' + u.formatClock(muteUntil) + '. New requests still appear in the list.'
           : soundOn
             ? 'Sound is waiting for a tap. Click anywhere on this page to turn alerts on.'
             : 'Sound alerts are off. New requests will arrive silently.';
+        if (warn.textContent !== text) warn.textContent = text;
       }
     }
 
@@ -260,34 +275,52 @@
     // A hidden tab cannot be seen, so make its title flash while requests are waiting.
     let titleFlip = false;
     function titleFor(n) {
-      return titleFlip && n ? '\uD83D\uDD14 ' + n + ' waiting' : (n ? '(' + n + ') ' : '') + 'CareGesture - Nurse station';
+      return titleFlip && n ? '\uD83D\uDD14 ' + n + ' waiting' : (n ? '(' + n + ') ' : '') + 'CareGesture - ' + (CHARGE ? 'Charge nurse' : 'Nurse station');
     }
     setInterval(() => {
-      const n = requests.filter((r) => r.status === 'new').length;
+      const n = watched(Date.now()).length;
       titleFlip = document.hidden && n > 0 ? !titleFlip : false;
       document.title = titleFor(n);
     }, 1000);
 
     updateSoundUI();
 
+    // Level 1 = new, 2 = overdue, 3 = escalated (nobody answered). Demo thresholds, not clinical rules.
+    function levelOf(r, now) {
+      if (r.status !== 'new' || !r.local_created_ms) return 1;
+      const age = now - r.local_created_ms;
+      return age >= api.ESCALATE_MS ? 3 : age > api.OVERDUE_MS ? 2 : 1;
+    }
+
+    function isOverdue(r, now) {
+      return levelOf(r, now) >= 2;
+    }
+
+    // The new requests this station is responsible for. The charge station only sees escalated ones.
+    function watched(now) {
+      return requests.filter((r) => r.status === 'new' && (!CHARGE || levelOf(r, now) === 3));
+    }
+
     function remind(now) {
       requests.forEach((r) => { if (r.status !== 'new') lastAlert.delete(r.id); });
       if (!soundActive() || muted()) return;
+      const order = { chime: 1, urgent: 2, escalated: 3 };
       let pattern = null;
       const phrases = [];
-      requests.forEach((r) => {
-        if (r.status !== 'new') return;
-        const overdue = isOverdue(r, now);
+      watched(now).forEach((r) => {
+        const level = levelOf(r, now);
         const last = lastAlert.get(r.id);
-        if (last === undefined || now - last >= (overdue ? OVERDUE_REPEAT_MS : NEW_REPEAT_MS)) {
+        const every = level === 3 ? ESCALATED_REPEAT_MS : level === 2 ? OVERDUE_REPEAT_MS : NEW_REPEAT_MS;
+        if (last === undefined || now - last >= every) {
           lastAlert.set(r.id, now);
-          const key = r.id + (overdue ? ':overdue' : ':new');
+          const key = r.id + ':' + level;
           if (!spoken.has(key)) {
             spoken.add(key);
-            phrases.push((overdue ? 'Overdue. ' : '') + u.typeInfo(r.type).label + ', room ' + r.room_id);
+            const what = u.typeInfo(r.type).label + ', room ' + u.roomLabel(r.room_id);
+            phrases.push(level === 3 ? 'Escalated. ' + what : level === 2 ? 'Overdue. ' + what : what);
           }
-          if (overdue) pattern = 'urgent';
-          else if (pattern !== 'urgent') pattern = 'chime';
+          const name = level === 3 ? 'escalated' : level === 2 ? 'urgent' : 'chime';
+          if (!pattern || order[name] > order[pattern]) pattern = name;
         }
       });
       if (pattern) { play(pattern); speak(phrases); }
@@ -295,25 +328,59 @@
 
     function noticeChanges() {
       const ids = new Set(requests.map((r) => r.id));
-      if (knownIds) {
+      const now = Date.now();
+      if (knownIds && !CHARGE) {
         requests.forEach((r) => {
           if (!knownIds.has(r.id) && r.status === 'new') {
             freshIds.add(r.id);
             setTimeout(() => freshIds.delete(r.id), 3000);
-            $('sr-announce').textContent = 'New ' + u.typeInfo(r.type).label + ' request from room ' + r.room_id;
+            $('sr-announce').textContent = 'New ' + u.typeInfo(r.type).label + ' request from room ' + u.roomLabel(r.room_id);
           }
         });
       }
       knownIds = ids;
-      remind(Date.now());
-    }
-
-    function isOverdue(r, now) {
-      return r.status === 'new' && r.created_ms && now - r.created_ms > api.OVERDUE_MS;
+      watched(now).forEach((r) => {
+        if (levelOf(r, now) === 3 && !escSeen.has(r.id)) {
+          escSeen.add(r.id);
+          $('sr-announce').textContent = 'Escalated: ' + u.typeInfo(r.type).label + ' request from room ' + u.roomLabel(r.room_id) + ' has not been answered';
+        }
+      });
+      remind(now);
     }
 
     // ---------- actions ----------
+    async function sendReply(id, code) {
+      if (pending.has(id)) return;
+      pending.add(id);
+      errors.delete(id);
+      renderActive(true);
+      try {
+        await api.replyRequest(id, code);
+        await live.refresh(); // the card shows what the backend stored, never a guess
+      } catch (err) {
+        const routeMissing = err.status === 405 || (err.status === 404 && err.detail === 'Not Found');
+        if (routeMissing) {
+          errors.set(id, 'Replies need a backend update (POST /api/requests/{id}/reply).');
+        } else if (err.status === 409) {
+          showNotice('Request ' + id + ' is already resolved, so it cannot be replied to.');
+        } else if (err.status === 404) {
+          showNotice('Request ' + id + ' no longer exists on the backend.');
+        } else {
+          errors.set(id, 'Could not send the reply. Check the connection and try again.');
+        }
+        await live.refresh();
+      } finally {
+        pending.delete(id);
+        renderActive(true);
+      }
+    }
+
     $('active-list').addEventListener('click', async (ev) => {
+      const replyBtn = ev.target.closest('button[data-reply]');
+      if (replyBtn) {
+        sendReply(replyBtn.dataset.id, replyBtn.dataset.reply);
+        return;
+      }
       const btn = ev.target.closest('button[data-action]');
       if (!btn) return;
       const id = btn.dataset.id;
@@ -375,12 +442,15 @@
     }
 
     function sortActive(list, now) {
-      const rank = (r) => (isOverdue(r, now) ? 0 : r.status === 'new' ? 1 : 2);
+      const rank = (r) => {
+        const level = levelOf(r, now);
+        return level === 3 ? 0 : level === 2 ? 1 : r.status === 'new' ? 2 : 3;
+      };
       return list.slice().sort((a, b) => {
         const ra = rank(a), rb = rank(b);
         if (ra !== rb) return ra - rb;
-        if (ra === 0) return (a.created_ms || 0) - (b.created_ms || 0); // overdue: oldest first
-        if (ra === 1) return (b.created_ms || 0) - (a.created_ms || 0); // new: newest first
+        if (ra <= 1) return (a.created_ms || 0) - (b.created_ms || 0);  // escalated / overdue: oldest first
+        if (ra === 2) return (b.created_ms || 0) - (a.created_ms || 0); // new: newest first
         return (a.created_ms || 0) - (b.created_ms || 0);              // acknowledged: oldest first
       });
     }
@@ -399,37 +469,68 @@
         Math.round(env.humidity_pct) + '% humidity</div>';
     }
 
+    function replyLabel(code) {
+      return api.REPLIES[code] ? api.REPLIES[code].label : code;
+    }
+
+    function repliedLine(r) {
+      if (!r.reply) return '';
+      return '<div class="req-replied">' + api.ICONS.check + '<span>Sent to patient: ' + u.escapeHtml(replyLabel(r.reply)) +
+        (r.reply_ms ? ' · ' + u.formatClock(r.reply_ms) : '') + '</span></div>';
+    }
+
+    // Preset replies only. Replying to a new request also acknowledges it (the backend does both).
+    function replyRow(r, busy) {
+      const options = api.REPLY_OPTIONS[r.type] || [];
+      if (!options.length) return '';
+      return '<div class="req-replies" role="group" aria-label="Reply to patient">' +
+        '<span class="req-replies-label">Reply to patient</span>' +
+        options.map((code) =>
+          '<button type="button" class="btn btn-small" data-id="' + u.escapeHtml(r.id) + '" data-reply="' + code + '"' +
+          ' data-focus-key="reply-' + u.escapeHtml(r.id) + '-' + code + '" aria-pressed="' + (r.reply === code) + '"' +
+          (busy ? ' disabled' : '') + '>' + u.escapeHtml(replyLabel(code)) + '</button>'
+        ).join('') +
+      '</div>';
+    }
+
     function card(r, now) {
       const t = u.typeInfo(r.type);
-      const overdue = isOverdue(r, now);
+      const level = levelOf(r, now);
+      const overdue = level >= 2;
       const busy = pending.has(r.id);
       const action = r.status === 'new' ? 'acknowledged' : 'resolved';
       const actionLabel = busy ? 'Saving...' : r.status === 'new' ? 'Acknowledge' : 'Resolve';
       const btnClass = r.status === 'new' ? 'btn btn-primary' : 'btn btn-ok';
       const err = errors.get(r.id);
-      const sinceMs = r.status === 'new' ? r.created_ms : r.acknowledged_ms;
+      const sinceMs = r.status === 'new' ? r.local_created_ms : r.acknowledged_ms;
       const waitLabel = r.status === 'new' ? 'Waiting' : 'Acknowledged';
       const waitText = sinceMs ? '<span class="req-wait">' + waitLabel + ' <span data-since="' + sinceMs + '">' +
         u.formatDuration(now - sinceMs) + '</span></span>' : '';
       return '' +
-        '<article class="req-card status-' + r.status + (overdue ? ' overdue' : '') + (freshIds.has(r.id) ? ' fresh' : '') + '"' +
-        ' aria-label="' + u.escapeHtml(t.label + ' request, room ' + r.room_id + ', ' + r.status) + '">' +
+        '<article class="req-card status-' + r.status + (overdue ? ' overdue' : '') + (level === 3 ? ' escalated' : '') + (freshIds.has(r.id) ? ' fresh' : '') + '"' +
+        ' aria-label="' + u.escapeHtml(t.label + ' request, room ' + u.roomLabel(r.room_id) + ', ' + (level === 3 ? 'escalated, ' : '') + r.status) + '">' +
           '<div class="req-top">' +
             '<span class="req-icon" aria-hidden="true">' + t.symbol + '</span>' +
             '<div><div class="req-type">' + u.escapeHtml(t.label) + '</div>' +
-            '<div class="req-room">Room ' + u.escapeHtml(r.room_id) + ' · ' + u.escapeHtml(r.id) + '</div></div>' +
+            '<div class="req-room">Room ' + u.escapeHtml(u.roomLabel(r.room_id)) + ' · ' + u.escapeHtml(r.id) + '</div></div>' +
             '<div class="req-badges">' +
-              // Overdue already implies new, so one badge says it.
-              (overdue ? '<span class="badge badge-overdue">Overdue</span>'
+              // Escalated implies overdue implies new, so one badge says the highest level.
+              (level === 3 ? '<span class="badge badge-escalated">Escalated</span>'
+                : overdue ? '<span class="badge badge-overdue">Overdue</span>'
                 : '<span class="badge badge-' + r.status + '">' + (r.status === 'new' ? 'New' : 'Acknowledged') + '</span>') +
             '</div>' +
           '</div>' +
           '<div class="req-meta"><span>Requested ' + u.formatClock(r.created_ms) + '</span>' + waitText + '</div>' +
+          (level === 3 ? '<div class="req-escalation">' + (CHARGE
+            ? 'The first station has not answered this request.'
+            : 'No answer yet: the charge nurse station is also being alerted.') + '</div>' : '') +
           envLine(r, now) +
           '<div class="req-actions">' +
             '<button class="' + btnClass + '" data-id="' + u.escapeHtml(r.id) + '" data-action="' + action + '"' +
             ' data-focus-key="card-' + u.escapeHtml(r.id) + '"' + (busy ? ' disabled' : '') + '>' + actionLabel + '</button>' +
           '</div>' +
+          repliedLine(r) +
+          replyRow(r, busy) +
           (err ? '<p class="req-error" role="alert">' + u.escapeHtml(err) + '</p>' : '') +
         '</article>';
     }
@@ -437,10 +538,10 @@
     let lastActiveSig = '';
     function renderActive(force) {
       const now = Date.now();
-      const active = sortActive(requests.filter((r) => r.status !== 'resolved'), now);
+      const active = sortActive(requests.filter((r) => r.status !== 'resolved' && (!CHARGE || levelOf(r, now) === 3)), now);
       const envKey = env ? [env.temperature_c, env.humidity_pct, u.isEnvironmentStale(env, now)].join('|') : 'none';
       const sig = JSON.stringify([
-        active.map((r) => [r.id, r.status, isOverdue(r, now), freshIds.has(r.id)]),
+        active.map((r) => [r.id, r.status, levelOf(r, now), r.reply, freshIds.has(r.id)]),
         [...pending], [...errors], envKey,
       ]);
       const list = $('active-list');
@@ -450,7 +551,9 @@
           ? document.activeElement.dataset.focusKey : null;
         list.innerHTML = active.length
           ? active.map((r) => card(r, now)).join('')
-          : '<div class="empty">No active requests. New requests appear here automatically.</div>';
+          : '<div class="empty">' + (CHARGE
+              ? 'No escalated requests. A request appears here when the first station has not answered in time.'
+              : 'No active requests. New requests appear here automatically.') + '</div>';
         if (focusKey) {
           const el = list.querySelector('[data-focus-key="' + CSS.escape(focusKey) + '"]');
           if (el) el.focus();
@@ -537,13 +640,28 @@
         ? done.map((r) => {
             const t = u.typeInfo(r.type);
             const took = r.resolved_ms && r.created_ms ? ' (took ' + u.formatDuration(r.resolved_ms - r.created_ms) + ')' : '';
-            return '<li><strong>' + u.escapeHtml(t.label) + '</strong> · Room ' + u.escapeHtml(r.room_id) +
+            return '<li><strong>' + u.escapeHtml(t.label) + '</strong> · Room ' + u.escapeHtml(u.roomLabel(r.room_id)) +
               ' · resolved ' + u.formatClock(r.resolved_ms || r.created_ms) + took + '</li>';
           }).join('')
         : '<li class="muted">Nothing resolved yet.</li>';
     }
 
+    function renderEscalation() {
+      const now = Date.now();
+      const n = requests.filter((r) => levelOf(r, now) === 3).length;
+      const el = $('esc-banner');
+      el.hidden = n === 0;
+      if (n) {
+        const text = CHARGE
+          ? n + (n === 1 ? ' request has' : ' requests have') + ' not been answered. Please respond now.'
+          : n + (n === 1 ? ' request is' : ' requests are') + ' escalated to the charge nurse. Please respond now.';
+        // Only write when the text changed: a live region rewritten every second is read out every second.
+        if (el.textContent !== text) el.textContent = text;
+      }
+    }
+
     function render() {
+      renderEscalation();
       renderHealth();
       renderActive(false);
       updateSoundUI();
@@ -565,7 +683,7 @@
         if (!btn) return;
         if (btn.dataset.mock === 'seed') api.mock.seedHistory();
         if (btn.dataset.mock === 'sensor') api.mock.setSensorOk(!api.mock.getFlags().sensorOk);
-        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; lastAlert.clear(); spoken.clear(); }
+        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; lastAlert.clear(); spoken.clear(); escSeen.clear(); }
         sync();
       });
     }

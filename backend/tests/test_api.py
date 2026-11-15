@@ -60,7 +60,7 @@ def test_held_gesture_creates_one_request(client):
     assert requests[0]["status"] == "new"
     assert set(requests[0]) == {
         "id", "room_id", "type", "status", "created_at",
-        "acknowledged_at", "resolved_at", "environment",
+        "acknowledged_at", "resolved_at", "environment", "reply", "reply_at", "age_ms",
     }
     assert requests[0]["acknowledged_at"] is None
     assert requests[0]["resolved_at"] is None
@@ -278,3 +278,75 @@ def test_detection_unavailable_when_predictions_stop(client, clock):
     post_prediction(client, "none", 0)
     clock.now += PREDICTION_TIMEOUT_MS + 1
     assert detection(client)["state"] == "unavailable"
+
+
+# --- Nurse replies ------------------------------------------------------------
+
+def first_request_id(client, label="scissors"):
+    hold(client, label)
+    return client.get("/api/requests").json()[0]["id"]
+
+
+def test_new_request_has_no_reply(client):
+    hold(client, "paper")
+    request = client.get("/api/requests").json()[0]
+    assert request["reply"] is None
+    assert request["reply_at"] is None
+
+
+def test_reply_acknowledges_a_new_request(client):
+    request_id = first_request_id(client)
+    response = client.post(f"/api/requests/{request_id}/reply", json={"reply": "bringing_water"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reply"] == "bringing_water"
+    assert body["reply_at"] is not None
+    assert body["status"] == "acknowledged"
+    assert body["acknowledged_at"] == body["reply_at"]
+
+
+def test_reply_can_be_changed_and_keeps_status(client):
+    request_id = first_request_id(client)
+    url = f"/api/requests/{request_id}"
+    client.patch(url, json={"status": "acknowledged"})
+    acked = client.get("/api/requests").json()[0]
+
+    first = client.post(f"{url}/reply", json={"reply": "on_my_way"}).json()
+    second = client.post(f"{url}/reply", json={"reply": "helping_another_patient"}).json()
+    assert second["reply"] == "helping_another_patient"
+    assert second["status"] == "acknowledged"
+    assert second["acknowledged_at"] == acked["acknowledged_at"]  # not restamped
+    assert first["reply"] == "on_my_way"
+
+
+def test_reply_to_resolved_request_is_rejected(client):
+    request_id = first_request_id(client)
+    url = f"/api/requests/{request_id}"
+    client.patch(url, json={"status": "acknowledged"})
+    client.patch(url, json={"status": "resolved"})
+    assert client.post(f"{url}/reply", json={"reply": "on_my_way"}).status_code == 409
+    assert client.get("/api/requests").json()[0]["reply"] is None
+
+
+def test_reply_unknown_id_and_bad_code(client):
+    assert (
+        client.post("/api/requests/req-9999/reply", json={"reply": "on_my_way"}).status_code
+        == 404
+    )
+    request_id = first_request_id(client)
+    url = f"/api/requests/{request_id}/reply"
+    assert client.post(url, json={"reply": "free text here"}).status_code == 422
+    assert client.post(url, json={}).status_code == 422
+
+
+def test_reply_shows_up_in_the_stream_snapshot(client):
+    request_id = first_request_id(client)
+    client.post(f"/api/requests/{request_id}/reply", json={"reply": "use_call_button"})
+    listed = client.get("/api/requests").json()[0]
+    assert listed["reply"] == "use_call_button"
+
+
+def test_requests_carry_the_backends_own_age(client):
+    hold(client, "paper")
+    age = client.get("/api/requests").json()[0]["age_ms"]
+    assert isinstance(age, int) and 0 <= age < 5000

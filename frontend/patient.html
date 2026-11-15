@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Patient</title>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body class="patient">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -22,6 +22,8 @@
   </header>
 
   <main>
+    <section id="reply-banner" class="reply-block reply-banner" role="status" hidden></section>
+
     <section id="state-panel" class="state-panel state-connecting">
       <div class="state-status" aria-live="polite" aria-atomic="true">
         <div id="state-icon" class="state-icon" aria-hidden="true"></div>
@@ -80,7 +82,7 @@
     <p id="demo-error" class="req-error" role="alert" hidden></p>
   </section>
 
-  <script src="api_client.js?v=9"></script>
+  <script src="api_client.js?v=11"></script>
   <script>
   (function () {
     'use strict';
@@ -96,7 +98,7 @@
     let everConnected = false;
     let detectionFailures = 0;
 
-    $('room-id').textContent = api.ROOM_ID;
+    $('room-id').textContent = u.roomLabel(api.ROOM_ID);
 
     // ---------- optional sound cues (off by default, remembered on this device) ----------
     const SOUND_KEY = 'caregesture_patient_sound';
@@ -345,19 +347,20 @@
       const el = $('last-request');
       const r = latestRequest();
       if (!r) {
+        $('reply-banner').hidden = true;
         if (el.dataset.sig !== 'none') {
           el.innerHTML = '<p class="muted">No requests yet.</p>';
           el.dataset.sig = 'none';
         }
         return;
       }
-      const sig = r.id + ':' + r.status;
+      const sig = r.id + ':' + r.status + ':' + (r.reply || '');
       if (el.dataset.sig === sig) return;
       el.dataset.sig = sig;
-      if (lastSeen && lastSeen.id === r.id && lastSeen.status !== r.status) {
+      if (lastSeen && lastSeen.id === r.id && (lastSeen.status !== r.status || lastSeen.reply !== r.reply)) {
         play(r.status === 'resolved' ? 'resolved' : 'seen');
       }
-      lastSeen = { id: r.id, status: r.status };
+      lastSeen = { id: r.id, status: r.status, reply: r.reply };
 
       const t = u.typeInfo(r.type);
       const messages = {
@@ -372,6 +375,20 @@
         const cls = i < idx ? 'done' : i === idx ? (r.status === 'resolved' ? 'done' : 'current') : '';
         return '<li class="' + cls + '"' + (i === idx ? ' aria-current="step"' : '') + '>' + labels[i] + '</li>';
       }).join('');
+
+      // A preset message from the nurse, in large text. An unknown code (newer backend) still says something.
+      // It goes in a banner above the status panel, so it is the first thing in view. Resolved hides it.
+      const known = r.reply ? api.REPLIES[r.reply] : null;
+      const banner = $('reply-banner');
+      if (r.reply && r.status !== 'resolved') {
+        banner.innerHTML = '<div class="reply-label">Message from your nurse</div>' +
+          '<div class="reply-text">' + u.escapeHtml(known ? known.patientText : 'A nurse sent you a message.') + '</div>' +
+          (r.reply_ms ? '<div class="reply-time">Sent at ' + u.formatClock(r.reply_ms) + '</div>' : '');
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+        banner.innerHTML = '';
+      }
 
       el.innerHTML =
         '<div class="last-type"><span class="type-symbol" aria-hidden="true">' + t.symbol + '</span>' + u.escapeHtml(t.label) + '</div>' +

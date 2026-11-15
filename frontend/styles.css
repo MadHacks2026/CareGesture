@@ -107,6 +107,7 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
 .badge-acknowledged { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
 .badge-resolved { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
 .badge-overdue { background: var(--danger); color: #fff; }
+.badge-escalated { background: #6b0f0a; color: #fff; }
 /* Healthy is the quiet state: plain text and a green tick. Only faults get a filled chip. */
 .chip-ok { padding-inline: 4px; color: var(--muted); font-weight: 600; }
 .chip-ok .icon { color: var(--ok); stroke-width: 3; }
@@ -250,6 +251,11 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
   background: var(--info-bg); color: var(--info); font-size: 1.75rem; line-height: 1;
 }
 .last-msg { font-size: 1.3rem; margin: 10px 0 20px; }
+.reply-block { margin: 14px 0 0; padding: 14px 18px; border-radius: var(--radius); background: var(--info-bg); border: 1.5px solid var(--info); color: var(--info); }
+.reply-label { font-size: 0.8rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; }
+.reply-text { margin-top: 4px; font-size: clamp(1.5rem, 4vw, 2.2rem); font-weight: 800; line-height: 1.2; color: var(--text); }
+.reply-time { margin-top: 4px; font-size: 0.95rem; color: var(--muted); }
+.reply-banner { grid-area: reply; margin: 0; padding: 18px 24px; border-radius: var(--radius-lg); box-shadow: var(--shadow-raised); }
 /* Request pipeline. The line shimmers only while the request is still in progress. */
 .steps {
   --progress: 0%; list-style: none; position: relative; padding: 0; margin: 0;
@@ -312,6 +318,7 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
   .state-panel { grid-area: state; }
   .last-request { grid-area: last; }
   .guide { grid-area: guide; }
+  .patient main:has(#reply-banner:not([hidden])) { grid-template-areas: "reply guide" "state guide" "last guide"; }
   .guide-list { grid-template-columns: 1fr; }
 }
 /* Tablet: three narrow cards, so stack hand over meaning. */
@@ -387,6 +394,14 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
 .req-env.stale { background: var(--warn-bg); color: var(--warn); font-weight: 700; }
 .req-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .req-actions .btn { min-width: 148px; }
+.req-replies { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.req-replies-label { flex: none; margin-right: 4px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.req-replied { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ok); }
+.req-replied .icon { stroke-width: 3; }
+.req-escalation { grid-column: 1 / -1; padding: 8px 12px; border-radius: var(--radius-sm); background: #6b0f0a; color: #fff; font-weight: 700; }
+.req-card.escalated { --stripe: #6b0f0a; border: 2px solid #6b0f0a; animation: escalate 1.6s ease-in-out infinite; }
+@keyframes escalate { 0%, 100% { box-shadow: inset 6px 0 0 var(--stripe), var(--shadow), 0 0 0 0 rgba(107, 15, 10, 0.45); } 50% { box-shadow: inset 6px 0 0 var(--stripe), var(--shadow), 0 0 0 8px rgba(107, 15, 10, 0); } }
+.charge .nurse-header { border-bottom: 4px solid #6b0f0a; }
 .req-error { margin: 0; color: var(--danger); font-weight: 700; }
 
 .env-big { display: flex; gap: 32px; flex-wrap: wrap; }

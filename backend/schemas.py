@@ -19,6 +19,14 @@ from pydantic import BaseModel, Field
 GestureLabel = Literal["paper", "scissors", "rock", "none"]
 RequestType = Literal["assistance", "water", "room_comfort"]
 RequestStatus = Literal["new", "acknowledged", "resolved"]
+# Preset nurse replies. The backend stores the code; the frontend owns the wording.
+ReplyCode = Literal[
+    "on_my_way",
+    "helping_another_patient",
+    "bringing_water",
+    "adjusting_room",
+    "use_call_button",
+]
 
 # Which gesture creates which request.
 GESTURE_TO_REQUEST: dict[str, str] = {
@@ -48,6 +56,12 @@ class Request(BaseModel):
     # Set when a nurse moves the request forward (ISO-8601, UTC). null until then.
     acknowledged_at: Optional[str] = None
     resolved_at: Optional[str] = None
+    # A preset reply the nurse sent to the patient, and when (ISO-8601, UTC). null until then.
+    reply: Optional[ReplyCode] = None
+    reply_at: Optional[str] = None
+    # Milliseconds since created_at by the BACKEND's clock, filled in on every read. The UI uses it
+    # to time waiting and escalation, so a device with a wrong clock cannot hide or fake an alert.
+    age_ms: Optional[int] = None
     # Room conditions at the moment a room_comfort request was created.
     # null for other types, or if no sensor reading existed at that time.
     environment: Optional["Environment"] = None

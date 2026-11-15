@@ -1,5 +1,7 @@
 """Status rules: new -> acknowledged -> resolved, nothing else."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from backend.request_store import InvalidTransition, RequestNotFound, RequestStore
@@ -55,3 +57,45 @@ def test_invalid_transitions_rejected(path, bad):
 def test_unknown_id():
     with pytest.raises(RequestNotFound):
         RequestStore().transition("req-9999", "acknowledged")
+
+
+def test_reply_on_new_request_also_acknowledges():
+    store = RequestStore()
+    request = store.create("water")
+    updated = store.reply(request.id, "bringing_water")
+    assert updated.status == "acknowledged"
+    assert updated.reply == "bringing_water"
+    assert updated.reply_at == updated.acknowledged_at
+
+
+def test_reply_on_acknowledged_request_keeps_the_original_acknowledgement():
+    store = RequestStore()
+    request = store.create("assistance")
+    acked = store.transition(request.id, "acknowledged")
+    updated = store.reply(request.id, "on_my_way")
+    assert updated.status == "acknowledged"
+    assert updated.acknowledged_at == acked.acknowledged_at
+
+
+def test_reply_is_rejected_once_resolved_or_unknown():
+    store = RequestStore()
+    request = store.create("assistance")
+    store.transition(request.id, "acknowledged")
+    store.transition(request.id, "resolved")
+    with pytest.raises(InvalidTransition):
+        store.reply(request.id, "on_my_way")
+    with pytest.raises(RequestNotFound):
+        store.reply("req-9999", "on_my_way")
+
+
+def test_age_ms_counts_from_creation_by_the_backends_clock():
+    store = RequestStore()
+    request = store.create("water")
+    assert 0 <= request.age_ms < 5000
+    ten_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
+    store._requests[request.id] = request.model_copy(
+        update={"created_at": ten_minutes_ago.isoformat()}
+    )
+    assert store.get(request.id).age_ms >= 600_000
+    assert store.list()[0].age_ms >= 600_000
+    assert store.transition(request.id, "acknowledged").age_ms >= 600_000

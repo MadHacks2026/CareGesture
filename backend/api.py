@@ -3,6 +3,8 @@
 For the frontend (Member 3):
   GET   /api/requests            list of requests, newest first
   PATCH /api/requests/{id}       body {"status": "acknowledged" | "resolved"}
+  POST  /api/requests/{id}/reply body {"reply": "<ReplyCode>"} preset message to the patient;
+                                 also acknowledges a new request; 409 once resolved
   GET   /api/environment         latest room reading (check "stale")
   GET   /api/status              device health
   GET   /api/detection           what the patient screen should show right now
@@ -30,6 +32,7 @@ from .schemas import (
     Detection,
     Environment,
     GesturePrediction,
+    ReplyCode,
     Request,
     RequestStatus,
     RequestType,
@@ -41,6 +44,10 @@ STREAM_INTERVAL_S = 1.0
 
 class StatusUpdate(BaseModel):
     status: RequestStatus
+
+
+class ReplyBody(BaseModel):
+    reply: ReplyCode
 
 
 class DemoTrigger(BaseModel):
@@ -67,6 +74,16 @@ def create_app(backend, mock: bool = False) -> FastAPI:
         # The ONLY place a request status changes: a nurse clicked a button.
         try:
             return backend.store.transition(request_id, body.status)
+        except RequestNotFound:
+            raise HTTPException(status_code=404, detail="request not found")
+        except InvalidTransition as error:
+            raise HTTPException(status_code=409, detail=str(error))
+
+    @app.post("/api/requests/{request_id}/reply", response_model=Request)
+    def reply_to_request(request_id: str, body: ReplyBody):
+        # A nurse tapped a preset reply. Presets only, never free text.
+        try:
+            return backend.store.reply(request_id, body.reply)
         except RequestNotFound:
             raise HTTPException(status_code=404, detail="request not found")
         except InvalidTransition as error:

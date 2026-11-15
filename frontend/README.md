@@ -48,7 +48,9 @@ Everything is simulated in the browser (localStorage, shared between tabs): held
 | `mock=1` | off | Browser-only mock backend, no server needed |
 | `poll=1` | off | Poll every second instead of using `/api/stream` |
 | `room=` | `01` | Room shown on the patient screen |
-| `overdue_s=` | `180` | Seconds before a new request is marked overdue (try `30` in a demo) |
+| `overdue_s=` | `180` | Seconds before a new request is marked overdue (try `10` in a demo) |
+| `escalate_s=` | `300` | Seconds before an unanswered request is escalated to the charge nurse station (try `20` in a demo) |
+| `station=charge` | off | Nurse page only: show just the escalated requests, as a second simulated station |
 
 ## How it uses `api.py`
 
@@ -56,6 +58,7 @@ Everything is simulated in the browser (localStorage, shared between tabs): held
 | --- | --- |
 | `GET /api/stream` | Main live feed. One snapshot per second with `requests`, `environment` and `status`. If the stream fails 3 times, is missing (404), or goes quiet for 3.5 s, the page reports a connection problem and falls back to polling. |
 | `GET /api/requests`, `/api/environment`, `/api/status` | Polling fallback, first paint, and an immediate refresh after each nurse action |
+| `POST /api/requests/{id}/reply` with `{"reply": "on_my_way"}` (a preset code) | Nurse reply buttons. Also acknowledges a new request. 409 once resolved. If the route is missing, the card says replies need a backend update. |
 | `PATCH /api/requests/{id}` with `{"status": "acknowledged"}` or `{"status": "resolved"}` | Nurse buttons. The screen then re-reads the backend and never shows a status the backend hasn't confirmed. 409 shows "already updated elsewhere". 404 shows "no longer exists". |
 | `POST /api/demo/trigger` with `{"type": "assistance" \| "water" \| "room_comfort"}` | Demo-only buttons (`?demo=1`) |
 
@@ -65,16 +68,40 @@ The `stale` flag from `/api/environment` is trusted over the browser's own clock
 
 `schemas.py` wasn't available when this was built, so the frontend reads the names from the team's shared contract. If any differ, change only the `normalize...` functions at the top of `api_client.js`.
 
-- **Request:** `id`, `room_id`, `type`, `status`, `created_at`. Also accepts `request_id` and `request_type`.
+- **Request:** `id`, `room_id`, `type`, `status`, `created_at`, `acknowledged_at`, `resolved_at`, `reply`, `reply_at`, `age_ms`. Also accepts `request_id` and `request_type`.
 - **Environment:** `temperature_c`, `humidity_pct`, `timestamp_ms`, `sensor_ok`, `stale`.
 - **Status:** `camera_ok`, `inference_ok`, `sensor_ok`, `backend_ok`. Missing or `null` shows as "Unknown", never as OK.
 
 ### Small backend asks for Member 2 (all optional)
 
-1. **`acknowledged_at` and `resolved_at`** on each Request. They power the response-time insights and the "took 4 m" times. Without them, the insights show counts only.
+1. **`acknowledged_at` and `resolved_at`** (done in the backend) on each Request. They power the response-time insights and the "took 4 m" times. Without them, the insights show counts only.
 2. **Timezone-aware `created_at`** (e.g. `datetime.now(timezone.utc)`). A naive timestamp from a UNO Q set to UTC would look 6 hours off in Chicago.
 3. **`environment` snapshot on `room_comfort` requests.** The nurse card then shows conditions at request time. Without it, the card shows the current reading.
 4. **`GET /api/detection?room_id=01`** returning `{"state": "ready|recognizing|sent|rejected|unavailable", "label": "paper", "progress": 0.6, "failed_attempts_recent": 2}`. This enables the patient's live hold progress bar, the "Not recognized, try again" message, and the nurse's unrecognized-attempts chip. Without it, the patient screen still shows ready, sent and unavailable.
+
+## Nurse replies
+
+A nurse can send the patient one of a few preset messages from the request card. Presets only, never free text, and none promises a time.
+
+| Code | Offered for | Patient reads |
+| --- | --- | --- |
+| `on_my_way` | Assistance | A nurse is on the way. |
+| `helping_another_patient` | All types | A nurse is helping another patient. Please wait. |
+| `use_call_button` | Assistance | Please use your call button. |
+| `bringing_water` | Water | A nurse is bringing your water. |
+| `adjusting_room` | Room comfort | A nurse is adjusting the room. |
+
+The backend stores the code; the wording lives in `api_client.js` (`REPLIES`, `REPLY_OPTIONS`). Replying to a `new` request also acknowledges it, so there is never a replied-to card still marked new. The latest reply wins. The patient sees it in a banner above the status panel until the request is resolved, with a chime if patient sound is on.
+
+## Escalation (demo thresholds, not clinical rules)
+
+| Level | Default age | What happens |
+| --- | --- | --- |
+| 1 New | 0 s | Normal card, chime every 60 s |
+| 2 Overdue | `overdue_s` (180 s) | Red card, urgent tone every 20 s |
+| 3 Escalated | `escalate_s` (300 s) | Dark red pulsing card, siren tone every 10 s, red banner, and the request appears on the charge nurse station (`nurse.html?station=charge`) |
+
+Levels use the backend's `age_ms` (time since creation by the backend's own clock), so a device with a wrong clock cannot hide or fake an escalation and every station agrees. Without `age_ms` (the browser mock) it falls back to `created_at`. Acknowledging or replying at any level removes it from both stations. For a demo, open the nurse page and the charge page with `overdue_s=10&escalate_s=20` (the launcher has links), then make a gesture and wait.
 
 ## Rules the UI follows
 
