@@ -28,6 +28,14 @@ ReplyCode = Literal[
     "use_call_button",
 ]
 
+# Which replies make sense for which request. A reply that does not fit (for example
+# "bringing_water" on an assistance request) is rejected, so a patient is never told something untrue.
+REPLIES_FOR_TYPE: dict[str, set[str]] = {
+    "assistance": {"on_my_way", "helping_another_patient", "use_call_button"},
+    "water": {"bringing_water", "helping_another_patient"},
+    "room_comfort": {"adjusting_room", "helping_another_patient"},
+}
+
 # Which gesture creates which request.
 GESTURE_TO_REQUEST: dict[str, str] = {
     "paper": "assistance",      # open palm

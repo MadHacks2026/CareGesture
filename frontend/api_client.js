@@ -406,9 +406,14 @@
           err.detail = 'request not found';
           throw err;
         }
-        if (req.status === 'resolved' || !REPLIES[code]) {
-          const err = new Error(req.status === 'resolved' ? 'Already resolved' : 'Invalid reply');
-          err.status = req.status === 'resolved' ? 409 : 422;
+        if (req.status === 'resolved') {
+          const err = new Error('Already resolved');
+          err.status = 409;
+          throw err;
+        }
+        if (!(REPLY_OPTIONS[req.type] || []).includes(code)) {
+          const err = new Error('Reply does not fit this request');
+          err.status = 422;
           throw err;
         }
         const iso = new Date(now).toISOString();

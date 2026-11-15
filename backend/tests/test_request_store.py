@@ -4,7 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend.request_store import InvalidTransition, RequestNotFound, RequestStore
+from backend.request_store import (
+    InvalidTransition,
+    ReplyNotAllowed,
+    RequestNotFound,
+    RequestStore,
+)
 
 
 def test_create_gives_unique_ids_and_new_status():
@@ -99,3 +104,24 @@ def test_age_ms_counts_from_creation_by_the_backends_clock():
     assert store.get(request.id).age_ms >= 600_000
     assert store.list()[0].age_ms >= 600_000
     assert store.transition(request.id, "acknowledged").age_ms >= 600_000
+
+
+@pytest.mark.parametrize(
+    "request_type, code",
+    [
+        ("assistance", "bringing_water"),
+        ("assistance", "adjusting_room"),
+        ("water", "on_my_way"),
+        ("water", "use_call_button"),
+        ("room_comfort", "bringing_water"),
+        ("room_comfort", "on_my_way"),
+    ],
+)
+def test_reply_that_does_not_fit_the_type_is_rejected_and_changes_nothing(request_type, code):
+    store = RequestStore()
+    request = store.create(request_type)
+    with pytest.raises(ReplyNotAllowed):
+        store.reply(request.id, code)
+    unchanged = store.get(request.id)
+    assert unchanged.reply is None
+    assert unchanged.status == "new"

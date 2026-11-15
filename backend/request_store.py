@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from .schemas import Environment, ReplyCode, Request
+from .schemas import REPLIES_FOR_TYPE, Environment, ReplyCode, Request
 
 DEFAULT_ROOM_ID = "room-101"
 
@@ -36,6 +36,10 @@ class RequestNotFound(Exception):
 
 
 class InvalidTransition(Exception):
+    pass
+
+
+class ReplyNotAllowed(Exception):
     pass
 
 
@@ -97,7 +101,7 @@ class RequestStore:
 
         Replying to a request nobody has looked at yet also acknowledges it, so one
         tap on "On my way" never leaves a card that is replied-to but still "new".
-        A resolved request is closed and cannot be replied to.
+        A resolved request is closed and cannot be replied to, and the reply must fit the request type.
         """
         with self._lock:
             request = self._requests.get(request_id)
@@ -105,6 +109,8 @@ class RequestStore:
                 raise RequestNotFound(request_id)
             if request.status == "resolved":
                 raise InvalidTransition("request is already resolved")
+            if code not in REPLIES_FOR_TYPE.get(request.type, set()):
+                raise ReplyNotAllowed(f"reply {code} does not fit a {request.type} request")
             now = _now_iso()
             update = {"reply": code, "reply_at": now}
             if request.status == "new":

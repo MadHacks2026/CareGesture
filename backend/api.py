@@ -4,7 +4,8 @@ For the frontend (Member 3):
   GET   /api/requests            list of requests, newest first
   PATCH /api/requests/{id}       body {"status": "acknowledged" | "resolved"}
   POST  /api/requests/{id}/reply body {"reply": "<ReplyCode>"} preset message to the patient;
-                                 also acknowledges a new request; 409 once resolved
+                                 also acknowledges a new request; 409 once resolved;
+                                 422 if the reply does not fit the request type
   GET   /api/environment         latest room reading (check "stale")
   GET   /api/status              device health
   GET   /api/detection           what the patient screen should show right now
@@ -27,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .request_store import InvalidTransition, RequestNotFound
+from .request_store import InvalidTransition, ReplyNotAllowed, RequestNotFound
 from .schemas import (
     Detection,
     Environment,
@@ -88,6 +89,8 @@ def create_app(backend, mock: bool = False) -> FastAPI:
             raise HTTPException(status_code=404, detail="request not found")
         except InvalidTransition as error:
             raise HTTPException(status_code=409, detail=str(error))
+        except ReplyNotAllowed as error:
+            raise HTTPException(status_code=422, detail=str(error))
 
     @app.get("/api/environment", response_model=Environment)
     def get_environment():

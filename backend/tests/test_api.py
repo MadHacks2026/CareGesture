@@ -311,12 +311,12 @@ def test_reply_can_be_changed_and_keeps_status(client):
     client.patch(url, json={"status": "acknowledged"})
     acked = client.get("/api/requests").json()[0]
 
-    first = client.post(f"{url}/reply", json={"reply": "on_my_way"}).json()
+    first = client.post(f"{url}/reply", json={"reply": "bringing_water"}).json()
     second = client.post(f"{url}/reply", json={"reply": "helping_another_patient"}).json()
     assert second["reply"] == "helping_another_patient"
     assert second["status"] == "acknowledged"
     assert second["acknowledged_at"] == acked["acknowledged_at"]  # not restamped
-    assert first["reply"] == "on_my_way"
+    assert first["reply"] == "bringing_water"
 
 
 def test_reply_to_resolved_request_is_rejected(client):
@@ -324,7 +324,7 @@ def test_reply_to_resolved_request_is_rejected(client):
     url = f"/api/requests/{request_id}"
     client.patch(url, json={"status": "acknowledged"})
     client.patch(url, json={"status": "resolved"})
-    assert client.post(f"{url}/reply", json={"reply": "on_my_way"}).status_code == 409
+    assert client.post(f"{url}/reply", json={"reply": "bringing_water"}).status_code == 409
     assert client.get("/api/requests").json()[0]["reply"] is None
 
 
@@ -341,12 +341,24 @@ def test_reply_unknown_id_and_bad_code(client):
 
 def test_reply_shows_up_in_the_stream_snapshot(client):
     request_id = first_request_id(client)
-    client.post(f"/api/requests/{request_id}/reply", json={"reply": "use_call_button"})
+    client.post(f"/api/requests/{request_id}/reply", json={"reply": "helping_another_patient"})
     listed = client.get("/api/requests").json()[0]
-    assert listed["reply"] == "use_call_button"
+    assert listed["reply"] == "helping_another_patient"
 
 
 def test_requests_carry_the_backends_own_age(client):
     hold(client, "paper")
     age = client.get("/api/requests").json()[0]["age_ms"]
     assert isinstance(age, int) and 0 <= age < 5000
+
+
+def test_reply_must_fit_the_request_type(client):
+    request_id = first_request_id(client, "paper")  # an assistance request
+    url = f"/api/requests/{request_id}/reply"
+    rejected = client.post(url, json={"reply": "bringing_water"})
+    assert rejected.status_code == 422
+    assert "does not fit" in rejected.json()["detail"]
+    request = client.get("/api/requests").json()[0]
+    assert request["reply"] is None
+    assert request["status"] == "new"  # a rejected reply must not acknowledge it either
+    assert client.post(url, json={"reply": "on_my_way"}).status_code == 200

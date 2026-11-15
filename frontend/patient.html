@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CareGesture - Patient</title>
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body class="patient">
   <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
@@ -13,6 +13,8 @@
   <div id="mock-banner" class="banner banner-demo" hidden>
     Demo mode: simulated data. No camera, model or sensor is connected.
   </div>
+
+  <div id="room-warning" class="banner banner-warn" role="status" hidden></div>
 
   <header class="patient-header">
     <span class="brand"><span class="brand-mark" aria-hidden="true"></span>CareGesture</span>
@@ -97,6 +99,7 @@
     let failures = 0;
     let everConnected = false;
     let detectionFailures = 0;
+    let otherRoom = null;
 
     $('room-id').textContent = u.roomLabel(api.ROOM_ID);
 
@@ -243,6 +246,10 @@
     function onSnapshot(snap) {
       status = snap.status;
       requests = snap.requests.filter((x) => !x.room_id || x.room_id === api.ROOM_ID);
+      // Requests exist, all for one other room: the screen is probably set to the wrong room, and the
+      // patient would never see "Seen by nurse" or a message. Say so instead of staying silent.
+      const otherRooms = new Set(snap.requests.map((x) => x.room_id).filter(Boolean));
+      otherRoom = requests.length === 0 && otherRooms.size === 1 ? [...otherRooms][0] : null;
       if (snap.environment !== undefined) env = snap.environment; // undefined = keep last reading
       failures = 0;
       everConnected = true;
@@ -413,7 +420,17 @@
       }
     }
 
+    function renderRoomWarning() {
+      const el = $('room-warning');
+      el.hidden = otherRoom === null;
+      if (otherRoom === null) return;
+      const text = 'Setup problem: requests are arriving for room ' + u.roomLabel(otherRoom) +
+        ', but this screen is set to room ' + u.roomLabel(api.ROOM_ID) + '. Ask staff to open it with ?room=' + encodeURIComponent(otherRoom) + '.';
+      if (el.textContent !== text) el.textContent = text;
+    }
+
     function render() {
+      renderRoomWarning();
       renderState();
       renderLastRequest();
       renderEnvironment();
