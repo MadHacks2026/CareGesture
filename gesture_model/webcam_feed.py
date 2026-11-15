@@ -1,10 +1,17 @@
 import cv2
 import sys
 import csv
-import numpy as np
 import mediapipe as mp
-import urllib
-from pathlib import Path
+import numpy as np
+import tensorflow as tf
+
+labels = {
+    0: 'none', 
+    1: 'rock',
+    2: 'paper',
+    3: 'scissors'
+}
+classifier = tf.keras.models.load_model("./tf_classifier.keras")
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -17,9 +24,6 @@ options = HandLandmarkerOptions(
     num_hands=2,
 )
 mp_drawing = mp.tasks.vision.drawing_utils
-
-with HandLandmarker.create_from_options(options) as landmarker:
-    pass
 
 def run_webcam(capture=False):
     with HandLandmarker.create_from_options(options) as landmarker:
@@ -56,6 +60,28 @@ def run_webcam(capture=False):
             annotated_frame.flags.writeable = True
             annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
             
+            
+            if results.hand_landmarks and results.handedness:
+                for idx, hand in enumerate(results.hand_landmarks):
+                    # 1. Flatten the 21 landmarks (x, y, z) into a 63-element list
+                    flat_landmarks = []
+                    for element in hand:
+                        flat_landmarks.extend([element.x, element.y, element.z])
+                    
+                    # 2. Extract corresponding handedness metadata safely
+                    # MediaPipe guarantees the indexes of hand_landmarks match handedness
+                    hand_info = results.handedness[idx][0]
+                    handedness_class_idx = float(hand_info.index)  # 0 for Left, 1 for Right
+                    handedness_score = float(hand_info.score)      # Confidence score
+                    
+                    # 3. Combine landmarks and handedness features into a single feature vector
+                    # Total features per row: 63 (landmarks) + 2 (handedness info) = 65
+                    feature_vector = flat_landmarks + [handedness_class_idx, handedness_score]
+                    print(np.array(feature_vector).shape)
+                    gesture = classifier.predict(np.expand_dims(np.array(feature_vector), axis=0))
+                    gesture = np.argmax (gesture, axis = 1)
+                    gesture = labels[gesture[0]]
+                    annotated_frame = cv2.putText(annotated_frame, gesture, (40, 70), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 2)
                 
             if results.hand_landmarks:
                 for num, hand in enumerate(results.hand_landmarks):
@@ -63,6 +89,9 @@ def run_webcam(capture=False):
                     mp_drawing.draw_landmarks(annotated_frame, hand, mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS,
                                             mp_drawing.DrawingSpec(color=(121, 22, 76), thickness=2, circle_radius=4),
                                             mp_drawing.DrawingSpec(color=(121, 44, 250), thickness=2, circle_radius=4), )
+            
+            
+            
             
             
             if capture:
