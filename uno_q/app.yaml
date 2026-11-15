@@ -1,0 +1,6 @@
+name: CareGesture
+description: "Touchless patient requests: hand gestures from a USB camera become nurse-station requests, with Modulino Thermo room conditions. Runs entirely on the board."
+ports: []
+bricks:
+- arduino:web_ui: {}
+icon: 🏥

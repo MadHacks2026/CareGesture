@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareGesture - Patient</title>
+  <link rel="stylesheet" href="styles.css?v=13">
+</head>
+<body class="patient">
+  <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
+    Connection lost. Gesture requests are unavailable. Please use your call button.
+  </div>
+  <div id="mock-banner" class="banner banner-demo" hidden>
+    Demo mode: simulated data. No camera, model or sensor is connected.
+  </div>
+
+  <div id="room-warning" class="banner banner-warn" role="status" hidden></div>
+
+  <header class="patient-header">
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span>CareGesture</span>
+    <span class="room-tag">Room <span id="room-id"></span></span>
+    <span id="env-mini" class="env-mini" aria-label="Room conditions"></span>
+    <button id="sound-toggle" class="btn btn-small" type="button" aria-pressed="false">Sound: off</button>
+  </header>
+
+  <main>
+    <section id="reply-banner" class="reply-block reply-banner" role="status" hidden></section>
+
+    <section id="state-panel" class="state-panel state-connecting">
+      <div class="state-status" aria-live="polite" aria-atomic="true">
+        <div id="state-icon" class="state-icon" aria-hidden="true"></div>
+        <h1 id="state-title">Connecting...</h1>
+        <p id="state-detail">Checking the camera and connection.</p>
+        <div id="hold-progress" class="hold-progress" role="progressbar" aria-label="Gesture hold progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+          <div id="hold-bar" class="hold-bar"></div>
+        </div>
+      </div>
+      <section class="camera-preview" aria-labelledby="camera-title">
+        <div class="camera-toolbar">
+          <div>
+            <h2 id="camera-title">Check your hand position</h2>
+            <p id="camera-hint">Private preview on this device.</p>
+          </div>
+          <button id="camera-toggle" class="camera-toggle" type="button" aria-controls="camera-stage" aria-expanded="false">
+            <span>Preview camera</span>
+          </button>
+        </div>
+        <div id="camera-stage" class="camera-stage" hidden>
+          <video id="camera-video" autoplay muted playsinline aria-label="Live camera preview" hidden></video>
+          <img id="camera-stream" alt="Live view from the room camera" hidden>
+          <div class="camera-private"><span aria-hidden="true">●</span> <span id="camera-private-text" style="color:inherit;margin:0">Live on this device only</span></div>
+        </div>
+        <p id="camera-message" class="camera-message" role="status" hidden></p>
+        <p id="ondevice-live" class="muted" aria-live="off" hidden></p>
+      </section>
+    </section>
+
+    <section class="last-request panel" aria-labelledby="last-title">
+      <h2 id="last-title">Your last request</h2>
+      <div id="last-request" aria-live="polite"><p class="muted">No requests yet.</p></div>
+    </section>
+
+    <section class="guide" aria-labelledby="guide-title">
+      <p class="eyebrow">Three simple requests</p>
+      <h2 id="guide-title">Hold one of these gestures steady for about 2 seconds</h2>
+      <p class="guide-hint">Face your palm toward the camera and keep your hand inside the frame.</p>
+      <ul id="guide-list" class="guide-list"></ul>
+    </section>
+  </main>
+
+  <section id="mock-controls" class="mock-controls" aria-labelledby="mock-title" hidden>
+    <h2 id="mock-title">Demo-only controls (no camera involved)</h2>
+    <div class="row">
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="paper">Hold open palm</button>
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="scissors">Hold two fingers</button>
+      <button class="btn btn-small mock-only" data-mock="hold" data-gesture="rock">Hold fist</button>
+      <button class="btn btn-small mock-only" data-mock="wave">Quick wave (should not send)</button>
+      <button class="btn btn-small mock-only" data-mock="camera" id="mock-camera">Unplug camera</button>
+      <button class="btn btn-small mock-only" data-mock="sensor" id="mock-sensor">Unplug sensor</button>
+      <button class="btn btn-small mock-only" data-mock="reset">Reset demo</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="assistance">Demo trigger: assistance</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="water">Demo trigger: water</button>
+      <button class="btn btn-small" data-mock="trigger" data-type="room_comfort">Demo trigger: room comfort</button>
+    </div>
+    <p id="demo-error" class="req-error" role="alert" hidden></p>
+  </section>
+
+  <script src="api_client.js?v=12"></script>
+  <script>
+  (function () {
+    'use strict';
+    const api = window.CareAPI;
+    const u = api.util;
+    const $ = (id) => document.getElementById(id);
+
+    let status = null;
+    let detection = null;
+    let requests = [];
+    let env = null;
+    let failures = 0;
+    let everConnected = false;
+    let detectionFailures = 0;
+    let otherRoom = null;
+
+    $('room-id').textContent = u.roomLabel(api.ROOM_ID);
+
+    // ---------- optional sound cues (off by default, remembered on this device) ----------
+    const SOUND_KEY = 'caregesture_patient_sound';
+    const CUES = {
+      tick: [[740, 0, 0.08]],
+      sent: [[660, 0, 0.16], [880, 0.2, 0.16], [1175, 0.4, 0.3]],
+      rejected: [[330, 0, 0.24]],
+      seen: [[880, 0, 0.16], [1175, 0.2, 0.3]],
+      resolved: [[1175, 0, 0.14], [880, 0.18, 0.14], [1175, 0.36, 0.3]],
+      test: [[660, 0, 0.14]],
+    };
+    const STATE_CUES = { recognizing: 'tick', sent: 'sent', rejected: 'rejected' };
+    let soundOn = false;
+    let audioCtx = null;
+    let lastKind = null;
+    let lastSeen = null;
+    try { soundOn = localStorage.getItem(SOUND_KEY) === '1'; } catch (err) { soundOn = false; }
+
+    function ensureAudio() {
+      if (!soundOn) return;
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        audioCtx = new Ctx();
+        audioCtx.addEventListener('statechange', updateSoundUI);
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(updateSoundUI, () => {});
+    }
+    function soundActive() { return soundOn && !!audioCtx && audioCtx.state === 'running'; }
+    function play(name) {
+      if (!soundActive()) return;
+      const t0 = audioCtx.currentTime;
+      CUES[name].forEach(([freq, offset, dur]) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.linearRampToValueAtTime(0.2, t0 + offset + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + offset + dur);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + dur + 0.02);
+      });
+    }
+    function updateSoundUI() {
+      const btn = $('sound-toggle');
+      const label = !soundOn ? 'Sound: off' : soundActive() ? 'Sound: on' : 'Sound: tap to activate';
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.setAttribute('aria-pressed', String(soundActive()));
+    }
+    $('sound-toggle').addEventListener('click', () => {
+      soundOn = !soundOn;
+      try { localStorage.setItem(SOUND_KEY, soundOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      if (soundOn) {
+        ensureAudio();
+        if (audioCtx) audioCtx.resume().then(() => { play('test'); updateSoundUI(); }, () => {});
+      }
+      updateSoundUI();
+    });
+    ['pointerdown', 'keydown'].forEach((evt) => document.addEventListener(evt, () => {
+      if (soundOn && !soundActive()) ensureAudio();
+    }, { passive: true }));
+    updateSoundUI();
+
+    // ---------- camera preview ----------
+    // On the board the stage shows the MJPEG feed of the camera the model watches (/camera).
+    // In browser-only demo mode (?mock=1) there is no board, so it opens this device's own camera.
+    let previewStream = null;
+    let previewOpen = false;
+    const cameraToggle = $('camera-toggle');
+    const cameraStage = $('camera-stage');
+    const cameraVideo = $('camera-video');
+    const cameraStream = $('camera-stream');
+    const cameraMessage = $('camera-message');
+
+    if (!api.MOCK) {
+      $('camera-hint').textContent = 'What the gesture model sees. The video stays on the board.';
+      $('camera-private-text').textContent = 'Live from the room camera';
+      cameraStream.addEventListener('error', () => {
+        if (!previewOpen) return;
+        cameraMessage.textContent = 'The camera stream is unavailable.';
+        cameraMessage.hidden = false;
+      });
+    }
+
+    function setToggle(icon, text) {
+      cameraToggle.innerHTML = '<span class="camera-toggle-icon" aria-hidden="true">' + icon + '</span><span>' + text + '</span>';
+    }
+    setToggle(api.ICONS.camera, 'Preview camera');
+
+    function stopPreview() {
+      if (previewStream) previewStream.getTracks().forEach((track) => track.stop());
+      previewStream = null;
+      previewOpen = false;
+      cameraVideo.srcObject = null;
+      cameraVideo.hidden = true;
+      cameraStream.removeAttribute('src'); // closes the MJPEG connection
+      cameraStream.hidden = true;
+      cameraStage.hidden = true;
+      setToggle(api.ICONS.camera, 'Preview camera');
+      cameraToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    function showPreview() {
+      previewOpen = true;
+      cameraStage.hidden = false;
+      setToggle(api.ICONS.x, 'Close preview');
+      cameraToggle.setAttribute('aria-expanded', 'true');
+    }
+
+    cameraToggle.addEventListener('click', async () => {
+      cameraMessage.hidden = true;
+      if (previewOpen) {
+        stopPreview();
+        return;
+      }
+      if (!api.MOCK && cameraSource !== 'browser') {
+        cameraStream.src = api.API_BASE + '/camera?t=' + Date.now();
+        cameraStream.hidden = false;
+        showPreview();
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        cameraMessage.textContent = 'Camera preview is not supported in this browser.';
+        cameraMessage.hidden = false;
+        return;
+      }
+      cameraToggle.disabled = true;
+      cameraToggle.textContent = 'Opening camera...';
+      try {
+        previewStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        cameraVideo.srcObject = previewStream;
+        cameraVideo.hidden = false;
+        showPreview();
+        if (!api.MOCK) sendFrames();
+      } catch (err) {
+        const busy = err && (err.name === 'NotReadableError' || err.name === 'AbortError');
+        const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+        cameraMessage.textContent = busy
+          ? 'The camera is already in use. Close another camera app or use the backend camera feed.'
+          : denied
+            ? 'Camera access was not allowed. Enable it in your browser settings to use the preview.'
+            : 'The camera could not be opened. Check that a camera is connected.';
+        cameraMessage.hidden = false;
+        stopPreview();
+      } finally {
+        cameraToggle.disabled = false;
+      }
+    });
+
+    window.addEventListener('pagehide', stopPreview);
+
+    // ---------- browser webcam -> board ----------
+    // When the board has no USB camera it asks for this device's webcam. Frames go to the
+    // board as JPEG; the board decodes them and runs its own (UNO Q-trained) model.
+    let cameraSource = 'usb';
+    const frameCanvas = document.createElement('canvas');
+    frameCanvas.width = 640;
+    frameCanvas.height = 480;
+
+    async function sendFrames() {
+      while (previewStream && cameraSource === 'browser') {
+        if (cameraVideo.readyState >= 2) {
+          frameCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, frameCanvas.width, frameCanvas.height);
+          const jpeg = frameCanvas.toDataURL('image/jpeg', 0.75).split(',')[1];
+          try {
+            await fetch(api.API_BASE + '/api/frame', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jpeg }), cache: 'no-store',
+            });
+          } catch (err) { /* board busy or offline: try the next frame */ }
+        }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    }
+
+    if (!api.MOCK) {
+      fetch(api.API_BASE + '/api/camera_source', { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((s) => {
+          cameraSource = s.source;
+          if (cameraSource !== 'browser') return;
+          $('camera-hint').textContent = 'No room camera: this device\'s webcam is used. The board runs the gesture model.';
+          $('camera-private-text').textContent = 'Webcam frames are sent to the board only';
+          setToggle(api.ICONS.camera, 'Start webcam');
+        })
+        .catch(() => {});
+    }
+
+    // ---------- gesture guide (static) ----------
+    $('guide-list').innerHTML = Object.values(api.REQUEST_TYPES).map((t) =>
+      '<li>' +
+        '<div class="guide-icon" role="img" aria-label="' + u.escapeHtml(t.gestureName) + '">' + t.icon + '</div>' +
+        '<div class="guide-gesture">' + u.escapeHtml(t.gestureName) + '</div>' +
+        '<div class="guide-means">' + t.symbol + u.escapeHtml(t.label) + '</div>' +
+      '</li>'
+    ).join('');
+
+    // ---------- polling ----------
+    function loop(fn, ms) {
+      (async function tick() {
+        await fn();
+        setTimeout(tick, ms);
+      })();
+    }
+
+    function onSnapshot(snap) {
+      status = snap.status;
+      requests = snap.requests.filter((x) => !x.room_id || x.room_id === api.ROOM_ID);
+      // Requests exist, all for one other room: the screen is probably set to the wrong room, and the
+      // patient would never see "Seen by nurse" or a message. Say so instead of staying silent.
+      const otherRooms = new Set(snap.requests.map((x) => x.room_id).filter(Boolean));
+      otherRoom = requests.length === 0 && otherRooms.size === 1 ? [...otherRooms][0] : null;
+      if (snap.environment !== undefined) env = snap.environment; // undefined = keep last reading
+      failures = 0;
+      everConnected = true;
+      render();
+    }
+
+    function onFail() {
+      failures++;
+      render();
+    }
+
+    async function pollDetection() {
+      try {
+        detection = await api.getDetection();
+        detectionFailures = 0;
+        // Raw output of the UNO Q-trained HOG + SVM model, before hold/cooldown rules.
+        const live = $('ondevice-live');
+        if (detection && detection.model) {
+          live.hidden = false;
+          live.textContent = 'On-device model (' + detection.model + '): ' +
+            (detection.live_label ? detection.live_label + ' ' + Math.round(detection.live_confidence * 100) + '%' : 'no gesture') +
+            (detection.live_ms ? ' · ' + detection.live_ms + ' ms/frame' : '');
+        }
+      } catch (err) {
+        detectionFailures++;
+        if (detectionFailures >= 3) detection = null;
+      }
+      renderState();
+    }
+
+    // ---------- rendering ----------
+    function connected() {
+      return everConnected && failures < 2;
+    }
+
+    function latestRequest() {
+      return requests.slice().sort((a, b) => (b.created_ms || 0) - (a.created_ms || 0))[0] || null;
+    }
+
+    function setState(kind, icon, title, detail, progress) {
+      if (kind !== lastKind) {
+        lastKind = kind;
+        if (STATE_CUES[kind]) play(STATE_CUES[kind]);
+      }
+      $('state-panel').className = 'state-panel state-' + kind;
+      // icon is one of the fixed line icons or a gesture emoji, never user text.
+      if ($('state-icon').dataset.icon !== icon) {
+        $('state-icon').innerHTML = icon;
+        $('state-icon').dataset.icon = icon;
+      }
+      if ($('state-title').textContent !== title) $('state-title').textContent = title;
+      if ($('state-detail').textContent !== detail) $('state-detail').textContent = detail;
+      const hp = $('hold-progress');
+      if (progress === null || progress === undefined) {
+        hp.hidden = true;
+        $('hold-bar').style.width = '0%';
+      } else {
+        const pct = Math.round(progress * 100);
+        hp.hidden = false;
+        $('hold-bar').style.width = pct + '%';
+        hp.setAttribute('aria-valuenow', String(pct));
+      }
+    }
+
+    function renderState() {
+      const now = Date.now();
+      $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
+
+      if (!everConnected && failures < 3) {
+        setState('connecting', api.ICONS.dots, 'Connecting...', 'Checking the camera and connection.');
+        return;
+      }
+      if (!connected()) {
+        setState('offline', api.ICONS.alert, 'Gesture requests unavailable', 'The connection was lost. Please use your call button.');
+        return;
+      }
+      // Unknown (null) camera or model status is treated as unavailable, never as working.
+      const monitoring = status && status.camera_ok === true && status.inference_ok === true &&
+        !(detection && detection.state === 'unavailable');
+      if (!monitoring) {
+        const why = status && status.camera_ok === false ? 'The camera is offline.' : 'Gesture detection is not running.';
+        setState('offline', api.ICONS.alert, 'Monitoring unavailable', why + ' Gesture requests will not be sent. Please use your call button.');
+        return;
+      }
+
+      const latest = latestRequest();
+      const justSent = latest && latest.created_ms && now - latest.created_ms < 4000;
+
+      if (detection && detection.state === 'recognizing') {
+        const t = gestureType(detection.label);
+        setState('recognizing', t ? t.icon : '', t ? 'Recognizing: ' + t.label : 'Recognizing...',
+          'Keep holding steady.', detection.progress === null ? 0 : detection.progress);
+      } else if (detection && detection.state === 'rejected') {
+        setState('rejected', api.ICONS.retry, 'Not recognized', 'Nothing was sent. Hold the gesture steady and try again.');
+      } else if ((detection && detection.state === 'sent') || justSent) {
+        const t = latest ? u.typeInfo(latest.type) : null;
+        setState('sent', api.ICONS.check, t ? t.patientText : 'Request sent', 'Your request was sent to the nurse.');
+      } else {
+        // Neutral icon on purpose: a waving hand would teach patients to wave, which is ignored.
+        setState('ready', api.ICONS.target, 'Ready', 'Show a gesture to the camera to ask for help.');
+      }
+    }
+
+    function gestureType(label) {
+      if (!label) return null;
+      return Object.values(api.REQUEST_TYPES).find((t) => t.gesture === label) || null;
+    }
+
+    function renderLastRequest() {
+      const el = $('last-request');
+      const r = latestRequest();
+      if (!r) {
+        $('reply-banner').hidden = true;
+        if (el.dataset.sig !== 'none') {
+          el.innerHTML = '<p class="muted">No requests yet.</p>';
+          el.dataset.sig = 'none';
+        }
+        return;
+      }
+      const sig = r.id + ':' + r.status + ':' + (r.reply || '');
+      if (el.dataset.sig === sig) return;
+      el.dataset.sig = sig;
+      if (lastSeen && lastSeen.id === r.id && (lastSeen.status !== r.status || lastSeen.reply !== r.reply)) {
+        play(r.status === 'resolved' ? 'resolved' : 'seen');
+      }
+      lastSeen = { id: r.id, status: r.status, reply: r.reply };
+
+      const t = u.typeInfo(r.type);
+      const messages = {
+        new: 'Sent. Waiting for a nurse to see it.',
+        acknowledged: 'A nurse has seen your request.',
+        resolved: 'Your request has been resolved.',
+      };
+      const order = ['new', 'acknowledged', 'resolved'];
+      const labels = ['Sent', 'Seen by nurse', 'Resolved'];
+      const idx = order.indexOf(r.status);
+      const steps = labels.map((label, i) => {
+        const cls = i < idx ? 'done' : i === idx ? (r.status === 'resolved' ? 'done' : 'current') : '';
+        return '<li class="' + cls + '"' + (i === idx ? ' aria-current="step"' : '') + '>' + labels[i] + '</li>';
+      }).join('');
+
+      // A preset message from the nurse, in large text. An unknown code (newer backend) still says something.
+      // It goes in a banner above the status panel, so it is the first thing in view. Resolved hides it.
+      const known = r.reply ? api.REPLIES[r.reply] : null;
+      const banner = $('reply-banner');
+      if (r.reply && r.status !== 'resolved') {
+        banner.innerHTML = '<div class="reply-label">Message from your nurse</div>' +
+          '<div class="reply-text">' + u.escapeHtml(known ? known.patientText : 'A nurse sent you a message.') + '</div>' +
+          (r.reply_ms ? '<div class="reply-time">Sent at ' + u.formatClock(r.reply_ms) + '</div>' : '');
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+        banner.innerHTML = '';
+      }
+
+      el.innerHTML =
+        '<div class="last-type"><span class="type-symbol" aria-hidden="true">' + t.symbol + '</span>' + u.escapeHtml(t.label) + '</div>' +
+        '<p class="last-msg">' + messages[r.status] + ' <span class="muted">Sent at ' + u.formatClock(r.created_ms) + '.</span></p>' +
+        '<ol class="steps steps-' + Math.max(idx, 0) + '" aria-label="Request progress">' + steps + '</ol>';
+    }
+
+    function renderEnvironment() {
+      const el = $('env-mini');
+      const now = Date.now();
+      if (!env || env.temperature_c === null) {
+        el.textContent = 'Room sensor offline';
+        el.classList.add('stale');
+        return;
+      }
+      if (u.isEnvironmentStale(env, now)) {
+        el.textContent = 'Room sensor offline (last reading ' + u.formatDuration(u.readingAgeMs(env, now)) + ' ago)';
+        el.classList.add('stale');
+      } else {
+        el.textContent = 'Room ' + env.temperature_c.toFixed(1) + ' °C · ' + Math.round(env.humidity_pct) + '% humidity';
+        el.classList.remove('stale');
+      }
+    }
+
+    function renderRoomWarning() {
+      const el = $('room-warning');
+      el.hidden = otherRoom === null;
+      if (otherRoom === null) return;
+      const text = 'Setup problem: requests are arriving for room ' + u.roomLabel(otherRoom) +
+        ', but this screen is set to room ' + u.roomLabel(api.ROOM_ID) + '. Ask staff to open it with ?room=' + encodeURIComponent(otherRoom) + '.';
+      if (el.textContent !== text) el.textContent = text;
+    }
+
+    function render() {
+      renderRoomWarning();
+      renderState();
+      renderLastRequest();
+      renderEnvironment();
+    }
+
+    // ---------- demo-only controls ----------
+    // ?mock=1: everything simulated in the browser. ?demo=1 with a real backend: only the
+    // trigger buttons, which call POST /api/demo/trigger (exists only when the backend runs in mock mode).
+    if (api.MOCK || api.DEMO) {
+      $('mock-banner').hidden = !api.MOCK;
+      $('mock-controls').hidden = false;
+      document.querySelectorAll('.mock-only').forEach((el) => { el.hidden = !api.MOCK; });
+      const syncMockLabels = () => {
+        if (!api.MOCK) return;
+        const f = api.mock.getFlags();
+        $('mock-camera').textContent = f.cameraOk ? 'Unplug camera' : 'Reconnect camera';
+        $('mock-sensor').textContent = f.sensorOk ? 'Unplug sensor' : 'Reconnect sensor';
+      };
+      syncMockLabels();
+      $('mock-controls').addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-mock]');
+        if (!btn) return;
+        $('demo-error').hidden = true;
+        if (btn.dataset.mock === 'trigger') {
+          try {
+            await api.demoTrigger(btn.dataset.type);
+            await live.refresh();
+          } catch (err) {
+            $('demo-error').textContent = err.message || 'Demo trigger failed.';
+            $('demo-error').hidden = false;
+          }
+          return;
+        }
+        const f = api.mock.getFlags();
+        switch (btn.dataset.mock) {
+          case 'hold': api.mock.holdGesture(btn.dataset.gesture); break;
+          case 'wave': api.mock.briefWave(); break;
+          case 'camera': api.mock.setCameraOk(!f.cameraOk); break;
+          case 'sensor': api.mock.setSensorOk(!f.sensorOk); break;
+          case 'reset': api.mock.reset(); break;
+        }
+        syncMockLabels();
+      });
+    }
+
+    const live = api.live(onSnapshot, onFail);
+    loop(pollDetection, api.DETECTION_POLL_MS);
+  })();
+  </script>
+</body>
+</html>

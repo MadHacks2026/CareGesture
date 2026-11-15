@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareGesture</title>
+  <link rel="stylesheet" href="styles.css?v=13">
+</head>
+<body class="launcher">
+  <main>
+    <header class="launcher-head">
+      <div class="launcher-top">
+        <div class="launcher-brand"><span class="brand-mark" aria-hidden="true"></span><span>CareGesture</span></div>
+        <span class="prototype-pill">Clinical prototype</span>
+      </div>
+      <h1>A gesture can be a voice.</h1>
+      <p>Touchless requests give patients a simple way to ask for assistance while keeping care teams informed.</p>
+    </header>
+    <section class="role-grid" aria-label="Choose a live view">
+      <article class="role-card role-patient">
+        <div class="role-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></div>
+        <p class="eyebrow">For the bedside</p>
+        <h2>Patient view</h2>
+        <p>Large, calm feedback confirms when a gesture is recognized and a request is received.</p>
+        <a class="btn btn-primary" href="patient.html">Open patient view <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+      </article>
+      <article class="role-card role-nurse">
+        <div class="role-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+        <p class="eyebrow">For the care team</p>
+        <h2>Nurse station</h2>
+        <p>Prioritized requests, room context, and response status in one focused dashboard.</p>
+        <a class="btn btn-primary" href="nurse.html">Open nurse station <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+      </article>
+    </section>
+    <section class="demo-strip">
+      <div><p class="eyebrow">Explore without hardware</p><h2>Try the interactive demo</h2><p>Simulated gestures and requests run entirely in this browser.</p></div>
+      <div class="launcher-links">
+        <a class="btn" href="patient.html?mock=1">Patient demo</a>
+        <a class="btn" href="nurse.html?mock=1">Nurse demo</a>
+        <a class="btn" href="nurse.html?mock=1&amp;overdue_s=10&amp;escalate_s=20">Nurse (fast timers)</a>
+        <a class="btn" href="nurse.html?mock=1&amp;station=charge&amp;overdue_s=10&amp;escalate_s=20">Charge nurse (fast timers)</a>
+      </div>
+    </section>
+    <footer class="launcher-note">Prototype only — not a certified nurse-call or emergency device.</footer>
+  </main>
+</body>
+</html>

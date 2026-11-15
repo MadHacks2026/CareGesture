@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CareGesture - Nurse station</title>
+  <link rel="stylesheet" href="styles.css?v=13">
+</head>
+<body class="nurse">
+  <div id="conn-banner" class="banner banner-danger" role="alert" hidden>
+    Connection to CareGesture lost. New gesture requests will not appear. Check patients directly.
+  </div>
+  <div id="mock-banner" class="banner banner-demo" hidden>
+    Demo mode: simulated data. Fictional rooms only. Not a clinical nurse-call system.
+  </div>
+
+  <div id="esc-banner" class="banner banner-danger" role="alert" hidden></div>
+
+  <header class="nurse-header">
+    <h1><span class="brand-mark" aria-hidden="true"></span><span>CareGesture <span id="station-name" class="h1-sub">nurse station</span></span></h1>
+    <div id="health" class="health" aria-label="System health"></div>
+    <button id="sound-toggle" class="btn btn-small" aria-pressed="false">Sound alerts: off</button>
+  </header>
+
+  <main class="nurse-main">
+    <section aria-labelledby="active-title">
+      <div class="section-head">
+        <div><p id="queue-eyebrow" class="eyebrow">Live queue</p><h2 id="active-title">Active requests</h2></div>
+        <span id="active-count" class="count"></span>
+      </div>
+      <p id="notice" class="insight-callout" role="status" hidden></p>
+      <p id="sound-warning" class="insight-callout" role="status" hidden></p>
+      <div id="active-list" class="request-list"></div>
+      <p id="sr-announce" class="sr-only" aria-live="assertive"></p>
+    </section>
+
+    <aside class="side">
+      <section class="panel" aria-labelledby="env-title">
+        <h2 id="env-title">Room <span id="room-id"></span> conditions</h2>
+        <div id="env-panel"></div>
+        <p class="env-note">Ambient room readings from the Modulino Thermo. Not a patient temperature.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="insight-title">
+        <h2 id="insight-title">Response insights (today)</h2>
+        <div id="insights"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="chart-title">
+        <h2 id="chart-title">Temperature Monitoring</h2>
+        <svg id="line-chart"></svg>
+      </section>
+
+      <section class="panel" aria-labelledby="resolved-title">
+        <h2 id="resolved-title">Recently resolved</h2>
+        <ol id="resolved-list" class="resolved-list"></ol>
+      </section>
+
+      <section class="panel" aria-labelledby="alerts-title">
+        <h2 id="alerts-title">Alert settings</h2>
+        <div class="alert-settings">
+          <label class="field"><span>Volume</span><input id="volume" type="range" min="10" max="100" step="5"></label>
+          <label class="check"><input id="speak" type="checkbox"><span>Speak requests aloud</span></label>
+          <div class="row">
+            <button id="mute-btn" class="btn btn-small" type="button" aria-pressed="false">Mute 5 min</button>
+            <button id="test-btn" class="btn btn-small" type="button">Test sound</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <section id="mock-controls" class="mock-controls" aria-labelledby="mock-title" hidden>
+    <h2 id="mock-title">Demo-only controls</h2>
+    <div class="row">
+      <button class="btn btn-small" data-mock="seed">Add sample history</button>
+      <button class="btn btn-small" data-mock="sensor" id="mock-sensor">Unplug sensor</button>
+      <button class="btn btn-small" data-mock="reset">Reset demo</button>
+      <span class="muted">Make gestures from the patient page's demo controls.</span>
+    </div>
+  </section>
+
+  <script src="api_client.js?v=12"></script>
+  <script>
+  (function () {
+    'use strict';
+    const api = window.CareAPI;
+    const u = api.util;
+    const $ = (id) => document.getElementById(id);
+
+    let requests = [];
+    let status = null;
+    let env = null;
+    let detection = null;
+    let failures = 0;
+    let everConnected = false;
+    let knownIds = null;
+    const freshIds = new Set();
+    const pending = new Set();
+    const errors = new Map();
+    let soundOn = false;
+    let audioCtx = null;
+    // ?station=charge shows only escalated requests, as a second, simulated nurse station.
+    const CHARGE = new URLSearchParams(window.location.search).get('station') === 'charge';
+    const escSeen = new Set();
+
+    $('room-id').textContent = u.roomLabel(api.ROOM_ID);
+    if (CHARGE) {
+      document.body.classList.add('charge');
+      $('station-name').textContent = 'charge nurse';
+      $('queue-eyebrow').textContent = 'Escalated queue';
+      $('active-title').textContent = 'Escalated requests';
+    }
+
+    // ---------- live updates ----------
+    function onSnapshot(snap) {
+      requests = snap.requests;
+      status = snap.status;
+      if (snap.environment !== undefined) env = snap.environment; // undefined = keep last reading
+      failures = 0;
+      everConnected = true;
+      noticeChanges();
+      render();
+    }
+
+    function onFail() {
+      failures++;
+      render();
+    }
+
+    async function pollDetection() {
+      try { detection = await api.getDetection(); } catch (err) { detection = null; }
+    }
+
+    function loop(fn, ms) {
+      (async function tick() {
+        await fn();
+        setTimeout(tick, ms);
+      })();
+    }
+
+    // ---------- alerts ----------
+    // Two distinct patterns so a nurse can tell them apart without looking:
+    //   chime  = a new request is waiting (repeats every 60 s until it is acknowledged)
+    //   urgent = a request is overdue (repeats every 20 s until it is acknowledged)
+    //   escalated = nobody answered; also alerting the charge nurse (repeats every 10 s)
+    // Browsers only allow audio after a click or key press, so a saved "on" preference
+    // needs one tap after a reload. The button and a warning say so instead of failing silently.
+    const SOUND_KEY = 'caregesture_sound';
+    const NEW_REPEAT_MS = 60000;
+    const OVERDUE_REPEAT_MS = 20000;
+    const ESCALATED_REPEAT_MS = 10000;
+    const PATTERNS = {
+      chime: [[880, 0, 0.16], [1175, 0.2, 0.24]],
+      urgent: [[560, 0, 0.18], [560, 0.28, 0.18], [560, 0.56, 0.18], [420, 0.9, 0.3]],
+      escalated: [[700, 0, 0.16], [500, 0.2, 0.16], [700, 0.4, 0.16], [500, 0.6, 0.16], [700, 0.8, 0.16], [500, 1.0, 0.32]],
+      test: [[660, 0, 0.14]],
+    };
+    const lastAlert = new Map();
+    const spoken = new Set();
+    let muteUntil = 0;
+    let volume = 0.6;
+    let speakOn = false;
+    try {
+      const v = Number(localStorage.getItem('caregesture_volume'));
+      if (v >= 0.1 && v <= 1) volume = v;
+      speakOn = localStorage.getItem('caregesture_speak') === '1';
+    } catch (err) { /* defaults */ }
+    const muted = () => Date.now() < muteUntil;
+
+    try { soundOn = localStorage.getItem(SOUND_KEY) === '1'; } catch (err) { soundOn = false; }
+
+    function ensureAudio() {
+      if (!soundOn) return;
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        audioCtx = new Ctx();
+        audioCtx.addEventListener('statechange', updateSoundUI);
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(updateSoundUI, () => {});
+    }
+
+    function soundActive() {
+      return soundOn && !!audioCtx && audioCtx.state === 'running';
+    }
+
+    function play(name) {
+      if (!soundActive() || muted()) return;
+      const t0 = audioCtx.currentTime;
+      PATTERNS[name].forEach(([freq, offset, dur]) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        // Short ramps avoid the click a hard start or stop makes.
+        gain.gain.setValueAtTime(0.0001, t0 + offset);
+        gain.gain.linearRampToValueAtTime(0.34 * volume, t0 + offset + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + offset + dur);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0 + offset);
+        osc.stop(t0 + offset + dur + 0.02);
+      });
+    }
+
+    function speak(list) {
+      if (!speakOn || !('speechSynthesis' in window) || !list.length) return;
+      const text = list.length > 1 ? list.length + ' requests. ' + list.join('. ') : list[0];
+      const ut = new SpeechSynthesisUtterance(text);
+      ut.rate = 0.95;
+      ut.volume = volume;
+      // Let the tone finish first, then say what it was.
+      setTimeout(() => { window.speechSynthesis.cancel(); window.speechSynthesis.speak(ut); }, 1000);
+    }
+
+    function updateSoundUI() {
+      const btn = $('sound-toggle');
+      let label = 'Sound alerts: off';
+      if (soundOn) label = soundActive() ? 'Sound alerts: on' : 'Sound alerts: tap to activate';
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.setAttribute('aria-pressed', String(soundActive()));
+      const isMuted = muted();
+      const mb = $('mute-btn');
+      const mlabel = isMuted ? 'Unmute' : 'Mute 5 min';
+      if (mb.textContent !== mlabel) mb.textContent = mlabel;
+      mb.setAttribute('aria-pressed', String(isMuted));
+      // A nurse who assumes sound is on will miss a request, so say it plainly.
+      const waiting = watched(Date.now()).length;
+      const warn = $('sound-warning');
+      warn.hidden = !isMuted && (soundActive() || waiting === 0);
+      if (!warn.hidden) {
+        const text = isMuted
+          ? 'Alerts muted until ' + u.formatClock(muteUntil) + '. New requests still appear in the list.'
+          : soundOn
+            ? 'Sound is waiting for a tap. Click anywhere on this page to turn alerts on.'
+            : 'Sound alerts are off. New requests will arrive silently.';
+        if (warn.textContent !== text) warn.textContent = text;
+      }
+    }
+
+    $('sound-toggle').addEventListener('click', () => {
+      soundOn = !soundOn;
+      try { localStorage.setItem(SOUND_KEY, soundOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      lastAlert.clear();
+      if (soundOn) {
+        ensureAudio();
+        if (audioCtx) audioCtx.resume().then(() => { play('test'); updateSoundUI(); }, () => {});
+      }
+      updateSoundUI();
+    });
+
+    // The first click or key press anywhere satisfies the browser's audio rule.
+    ['pointerdown', 'keydown'].forEach((evt) => document.addEventListener(evt, () => {
+      if (soundOn && !soundActive()) ensureAudio();
+    }, { passive: true }));
+
+    $('volume').value = Math.round(volume * 100);
+    $('volume').addEventListener('input', (ev) => { volume = Number(ev.target.value) / 100; });
+    $('volume').addEventListener('change', () => {
+      try { localStorage.setItem('caregesture_volume', String(volume)); } catch (err) { /* private mode */ }
+      play('chime'); // hear the new level
+    });
+    $('speak').checked = speakOn;
+    $('speak').addEventListener('change', (ev) => {
+      speakOn = ev.target.checked;
+      try { localStorage.setItem('caregesture_speak', speakOn ? '1' : '0'); } catch (err) { /* private mode */ }
+      if (speakOn) speak(['Spoken alerts on']);
+    });
+    $('mute-btn').addEventListener('click', () => {
+      muteUntil = muted() ? 0 : Date.now() + 5 * 60000;
+      updateSoundUI();
+    });
+    $('test-btn').addEventListener('click', () => {
+      if (!soundOn) { $('sound-toggle').click(); return; }
+      ensureAudio();
+      play('chime');
+      speak(['Test alert']);
+    });
+
+    // A hidden tab cannot be seen, so make its title flash while requests are waiting.
+    let titleFlip = false;
+    function titleFor(n) {
+      return titleFlip && n ? '🔔 ' + n + ' waiting' : (n ? '(' + n + ') ' : '') + 'CareGesture - ' + (CHARGE ? 'Charge nurse' : 'Nurse station');
+    }
+    setInterval(() => {
+      const n = watched(Date.now()).length;
+      titleFlip = document.hidden && n > 0 ? !titleFlip : false;
+      document.title = titleFor(n);
+    }, 1000);
+
+    updateSoundUI();
+
+    // Level 1 = new, 2 = overdue, 3 = escalated (nobody answered). Demo thresholds, not clinical rules.
+    function levelOf(r, now) {
+      if (r.status !== 'new' || !r.local_created_ms) return 1;
+      const age = now - r.local_created_ms;
+      return age >= api.ESCALATE_MS ? 3 : age > api.OVERDUE_MS ? 2 : 1;
+    }
+
+    function isOverdue(r, now) {
+      return levelOf(r, now) >= 2;
+    }
+
+    // The new requests this station is responsible for. The charge station only sees escalated ones.
+    function watched(now) {
+      return requests.filter((r) => r.status === 'new' && (!CHARGE || levelOf(r, now) === 3));
+    }
+
+    function remind(now) {
+      requests.forEach((r) => { if (r.status !== 'new') lastAlert.delete(r.id); });
+      if (!soundActive() || muted()) return;
+      const order = { chime: 1, urgent: 2, escalated: 3 };
+      let pattern = null;
+      const phrases = [];
+      watched(now).forEach((r) => {
+        const level = levelOf(r, now);
+        const last = lastAlert.get(r.id);
+        const every = level === 3 ? ESCALATED_REPEAT_MS : level === 2 ? OVERDUE_REPEAT_MS : NEW_REPEAT_MS;
+        if (last === undefined || now - last >= every) {
+          lastAlert.set(r.id, now);
+          const key = r.id + ':' + level;
+          if (!spoken.has(key)) {
+            spoken.add(key);
+            const what = u.typeInfo(r.type).label + ', room ' + u.roomLabel(r.room_id);
+            phrases.push(level === 3 ? 'Escalated. ' + what : level === 2 ? 'Overdue. ' + what : what);
+          }
+          const name = level === 3 ? 'escalated' : level === 2 ? 'urgent' : 'chime';
+          if (!pattern || order[name] > order[pattern]) pattern = name;
+        }
+      });
+      if (pattern) { play(pattern); speak(phrases); }
+    }
+
+    function noticeChanges() {
+      const ids = new Set(requests.map((r) => r.id));
+      const now = Date.now();
+      if (knownIds && !CHARGE) {
+        requests.forEach((r) => {
+          if (!knownIds.has(r.id) && r.status === 'new') {
+            freshIds.add(r.id);
+            setTimeout(() => freshIds.delete(r.id), 3000);
+            $('sr-announce').textContent = 'New ' + u.typeInfo(r.type).label + ' request from room ' + u.roomLabel(r.room_id);
+          }
+        });
+      }
+      knownIds = ids;
+      watched(now).forEach((r) => {
+        if (levelOf(r, now) === 3 && !escSeen.has(r.id)) {
+          escSeen.add(r.id);
+          $('sr-announce').textContent = 'Escalated: ' + u.typeInfo(r.type).label + ' request from room ' + u.roomLabel(r.room_id) + ' has not been answered';
+        }
+      });
+      remind(now);
+    }
+
+    // ---------- actions ----------
+    async function sendReply(id, code) {
+      if (pending.has(id)) return;
+      pending.add(id);
+      errors.delete(id);
+      renderActive(true);
+      try {
+        await api.replyRequest(id, code);
+        await live.refresh(); // the card shows what the backend stored, never a guess
+      } catch (err) {
+        const routeMissing = err.status === 405 || (err.status === 404 && err.detail === 'Not Found');
+        if (routeMissing) {
+          errors.set(id, 'Replies need a backend update (POST /api/requests/{id}/reply).');
+        } else if (err.status === 409) {
+          showNotice('Request ' + id + ' is already resolved, so it cannot be replied to.');
+        } else if (err.status === 404) {
+          showNotice('Request ' + id + ' no longer exists on the backend.');
+        } else {
+          errors.set(id, 'Could not send the reply. Check the connection and try again.');
+        }
+        await live.refresh();
+      } finally {
+        pending.delete(id);
+        renderActive(true);
+      }
+    }
+
+    $('active-list').addEventListener('click', async (ev) => {
+      const replyBtn = ev.target.closest('button[data-reply]');
+      if (replyBtn) {
+        sendReply(replyBtn.dataset.id, replyBtn.dataset.reply);
+        return;
+      }
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (pending.has(id)) return;
+      pending.add(id);
+      errors.delete(id);
+      renderActive(true);
+      try {
+        await api.updateRequest(id, btn.dataset.action);
+        await live.refresh(); // show the backend's status, never an optimistic guess
+      } catch (err) {
+        if (err.status === 409 || err.status === 404) {
+          // The card may vanish after the refresh, so say it at the top of the list instead.
+          showNotice(err.status === 409
+            ? 'Request ' + id + ' was already updated elsewhere. The list now shows its current status.'
+            : 'Request ' + id + ' no longer exists on the backend.');
+        } else {
+          errors.set(id, 'Could not update. Check the connection and try again.');
+        }
+        await live.refresh();
+      } finally {
+        pending.delete(id);
+        renderActive(true);
+      }
+    });
+
+    let noticeTimer = null;
+    function showNotice(text) {
+      $('notice').textContent = text;
+      $('notice').hidden = false;
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 8000);
+    }
+
+    // ---------- rendering ----------
+    function connected() {
+      return everConnected && failures < 2;
+    }
+
+    function chip(label, value) {
+      const cls = value === true ? 'ok' : value === false ? 'bad' : 'unknown';
+      const word = value === true ? 'OK' : value === false ? 'Offline' : 'Unknown';
+      const mark = value === true ? api.ICONS.check : value === false ? api.ICONS.x : api.ICONS.help;
+      return '<span class="chip chip-' + cls + '">' + mark + label + ': ' + word + '</span>';
+    }
+
+    function renderHealth() {
+      const conn = connected();
+      const s = conn && status ? status : { camera_ok: null, inference_ok: null, sensor_ok: null, backend_ok: false };
+      let html = chip('Camera', s.camera_ok) + chip('Model', s.inference_ok) + chip('Sensor', s.sensor_ok) +
+        chip('Backend', conn ? s.backend_ok : false);
+      const attempts = detection ? detection.failed_attempts_recent : null;
+      if (attempts !== null && attempts !== undefined) {
+        const cls = attempts >= 3 ? 'warn' : 'ok';
+        html += '<span class="chip chip-' + cls + '">Unrecognized attempts (5 min):' + attempts + '</span>';
+      }
+      $('health').innerHTML = html;
+      $('conn-banner').hidden = !(everConnected && failures >= 2) && !(failures >= 3);
+    }
+
+    function sortActive(list, now) {
+      const rank = (r) => {
+        const level = levelOf(r, now);
+        return level === 3 ? 0 : level === 2 ? 1 : r.status === 'new' ? 2 : 3;
+      };
+      return list.slice().sort((a, b) => {
+        const ra = rank(a), rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        if (ra <= 1) return (a.created_ms || 0) - (b.created_ms || 0);  // escalated / overdue: oldest first
+        if (ra === 2) return (b.created_ms || 0) - (a.created_ms || 0); // new: newest first
+        return (a.created_ms || 0) - (b.created_ms || 0);              // acknowledged: oldest first
+      });
+    }
+
+    function envLine(r, now) {
+      if (r.type !== 'room_comfort') return '';
+      const snap = r.environment;
+      if (snap && snap.temperature_c !== null) {
+        return '<div class="req-env">At request time: ' + snap.temperature_c.toFixed(1) + ' °C, ' +
+          Math.round(snap.humidity_pct) + '% humidity</div>';
+      }
+      if (!env || u.isEnvironmentStale(env, now)) {
+        return '<div class="req-env stale">Room sensor offline. No current reading.</div>';
+      }
+      return '<div class="req-env">Room now: ' + env.temperature_c.toFixed(1) + ' °C, ' +
+        Math.round(env.humidity_pct) + '% humidity</div>';
+    }
+
+    function replyLabel(code) {
+      return api.REPLIES[code] ? api.REPLIES[code].label : code;
+    }
+
+    function repliedLine(r) {
+      if (!r.reply) return '';
+      return '<div class="req-replied">' + api.ICONS.check + '<span>Sent to patient: ' + u.escapeHtml(replyLabel(r.reply)) +
+        (r.reply_ms ? ' · ' + u.formatClock(r.reply_ms) : '') + '</span></div>';
+    }
+
+    // Preset replies only. Replying to a new request also acknowledges it (the backend does both).
+    function replyRow(r, busy) {
+      const options = api.REPLY_OPTIONS[r.type] || [];
+      if (!options.length) return '';
+      return '<div class="req-replies" role="group" aria-label="Reply to patient">' +
+        '<span class="req-replies-label">Reply to patient</span>' +
+        options.map((code) =>
+          '<button type="button" class="btn btn-small" data-id="' + u.escapeHtml(r.id) + '" data-reply="' + code + '"' +
+          ' data-focus-key="reply-' + u.escapeHtml(r.id) + '-' + code + '" aria-pressed="' + (r.reply === code) + '"' +
+          (busy ? ' disabled' : '') + '>' + u.escapeHtml(replyLabel(code)) + '</button>'
+        ).join('') +
+      '</div>';
+    }
+
+    function card(r, now) {
+      const t = u.typeInfo(r.type);
+      const level = levelOf(r, now);
+      const overdue = level >= 2;
+      const busy = pending.has(r.id);
+      const action = r.status === 'new' ? 'acknowledged' : 'resolved';
+      const actionLabel = busy ? 'Saving...' : r.status === 'new' ? 'Acknowledge' : 'Resolve';
+      const btnClass = r.status === 'new' ? 'btn btn-primary' : 'btn btn-ok';
+      const err = errors.get(r.id);
+      const sinceMs = r.status === 'new' ? r.local_created_ms : r.acknowledged_ms;
+      const waitLabel = r.status === 'new' ? 'Waiting' : 'Acknowledged';
+      const waitText = sinceMs ? '<span class="req-wait">' + waitLabel + ' <span data-since="' + sinceMs + '">' +
+        u.formatDuration(now - sinceMs) + '</span></span>' : '';
+      return '' +
+        '<article class="req-card status-' + r.status + (overdue ? ' overdue' : '') + (level === 3 ? ' escalated' : '') + (freshIds.has(r.id) ? ' fresh' : '') + '"' +
+        ' aria-label="' + u.escapeHtml(t.label + ' request, room ' + u.roomLabel(r.room_id) + ', ' + (level === 3 ? 'escalated, ' : '') + r.status) + '">' +
+          '<div class="req-top">' +
+            '<span class="req-icon" aria-hidden="true">' + t.symbol + '</span>' +
+            '<div><div class="req-type">' + u.escapeHtml(t.label) + '</div>' +
+            '<div class="req-room">Room ' + u.escapeHtml(u.roomLabel(r.room_id)) + ' · ' + u.escapeHtml(r.id) + '</div></div>' +
+            '<div class="req-badges">' +
+              // Escalated implies overdue implies new, so one badge says the highest level.
+              (level === 3 ? '<span class="badge badge-escalated">Escalated</span>'
+                : overdue ? '<span class="badge badge-overdue">Overdue</span>'
+                : '<span class="badge badge-' + r.status + '">' + (r.status === 'new' ? 'New' : 'Acknowledged') + '</span>') +
+            '</div>' +
+          '</div>' +
+          '<div class="req-meta"><span>Requested ' + u.formatClock(r.created_ms) + '</span>' + waitText + '</div>' +
+          (level === 3 ? '<div class="req-escalation">' + (CHARGE
+            ? 'The first station has not answered this request.'
+            : 'No answer yet: the charge nurse station is also being alerted.') + '</div>' : '') +
+          envLine(r, now) +
+          '<div class="req-actions">' +
+            '<button class="' + btnClass + '" data-id="' + u.escapeHtml(r.id) + '" data-action="' + action + '"' +
+            ' data-focus-key="card-' + u.escapeHtml(r.id) + '"' + (busy ? ' disabled' : '') + '>' + actionLabel + '</button>' +
+          '</div>' +
+          repliedLine(r) +
+          replyRow(r, busy) +
+          (err ? '<p class="req-error" role="alert">' + u.escapeHtml(err) + '</p>' : '') +
+        '</article>';
+    }
+
+    let lastActiveSig = '';
+    function renderActive(force) {
+      const now = Date.now();
+      const active = sortActive(requests.filter((r) => r.status !== 'resolved' && (!CHARGE || levelOf(r, now) === 3)), now);
+      const envKey = env ? [env.temperature_c, env.humidity_pct, u.isEnvironmentStale(env, now)].join('|') : 'none';
+      const sig = JSON.stringify([
+        active.map((r) => [r.id, r.status, levelOf(r, now), r.reply, freshIds.has(r.id)]),
+        [...pending], [...errors], envKey,
+      ]);
+      const list = $('active-list');
+      if (force || sig !== lastActiveSig) {
+        lastActiveSig = sig;
+        const focusKey = document.activeElement && document.activeElement.dataset
+          ? document.activeElement.dataset.focusKey : null;
+        list.innerHTML = active.length
+          ? active.map((r) => card(r, now)).join('')
+          : '<div class="empty">' + (CHARGE
+              ? 'No escalated requests. A request appears here when the first station has not answered in time.'
+              : 'No active requests. New requests appear here automatically.') + '</div>';
+        if (focusKey) {
+          const el = list.querySelector('[data-focus-key="' + CSS.escape(focusKey) + '"]');
+          if (el) el.focus();
+        }
+      } else {
+        list.querySelectorAll('[data-since]').forEach((el) => {
+          el.textContent = u.formatDuration(now - Number(el.dataset.since));
+        });
+      }
+      const newCount = active.filter((r) => r.status === 'new').length;
+      $('active-count').textContent = active.length ? newCount + ' new · ' + active.length + ' open' : '';
+      document.title = titleFor(newCount);
+    }
+
+    function renderEnvironment() {
+      const el = $('env-panel');
+      const now = Date.now();
+      if (!env || env.temperature_c === null) {
+        el.innerHTML = '<p class="env-age stale">No reading from the room sensor.</p>';
+        return;
+      }
+      const stale = u.isEnvironmentStale(env, now);
+      const age = u.readingAgeMs(env, now);
+      el.innerHTML =
+        '<div class="env-big">' +
+          '<div><div class="env-value">' + env.temperature_c.toFixed(1) + ' °C</div><div class="env-label">Temperature</div></div>' +
+          '<div><div class="env-value">' + (env.humidity_pct === null ? '--' : Math.round(env.humidity_pct) + '%') + '</div><div class="env-label">Humidity</div></div>' +
+        '</div>' +
+        '<p class="env-age' + (stale ? ' stale' : '') + '">' +
+          (stale ? 'Stale: sensor offline. Last reading ' + u.formatDuration(age) + ' ago.' : 'Updated ' + u.formatDuration(age) + ' ago') +
+        '</p>';
+    }
+
+    function avg(values) {
+      return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+    }
+
+    function renderInsights() {
+      const dayStart = new Date();
+      dayStart.setHours(0, 0, 0, 0);
+      const today = requests.filter((r) => (r.created_ms || 0) >= dayStart.getTime());
+      if (!today.length) {
+        $('insights').innerHTML = '<p class="muted">No requests yet today.</p>';
+        return;
+      }
+      const rows = Object.keys(api.REQUEST_TYPES).map((type) => {
+        const list = today.filter((r) => r.type === type);
+        const ack = avg(list.filter((r) => r.acknowledged_ms).map((r) => r.acknowledged_ms - r.created_ms));
+        const res = avg(list.filter((r) => r.resolved_ms).map((r) => r.resolved_ms - r.created_ms));
+        return { type, count: list.length, ack, res };
+      });
+      const body = rows.map((row) =>
+        '<tr><td>' + u.escapeHtml(u.typeInfo(row.type).label) + '</td><td>' + row.count + '</td>' +
+        '<td>' + (row.ack === null ? '--' : u.formatDuration(row.ack)) + '</td>' +
+        '<td>' + (row.res === null ? '--' : u.formatDuration(row.res)) + '</td></tr>'
+      ).join('');
+
+      let callout = '';
+      const timed = rows.filter((r) => r.ack !== null);
+      if (timed.length >= 2) {
+        const slowest = timed.reduce((a, b) => (b.ack > a.ack ? b : a));
+        const fastest = timed.reduce((a, b) => (b.ack < a.ack ? b : a));
+        if (slowest.ack > fastest.ack * 1.5) {
+          callout = '<p class="insight-callout">' + u.escapeHtml(u.typeInfo(slowest.type).label) +
+            ' requests wait longest to be acknowledged (' + u.formatDuration(slowest.ack) + ' on average).</p>';
+        }
+      }
+      const hasHandled = today.some((r) => r.status !== 'new');
+      const hasTimes = today.some((r) => r.acknowledged_ms);
+      const note = hasHandled && !hasTimes
+        ? '<p class="insight-note">Response times need acknowledged_at and resolved_at fields from the backend.</p>'
+        : '';
+
+      $('insights').innerHTML =
+        '<table class="insights-table"><thead><tr><th>Type</th><th>Count</th><th>Avg to ack</th><th>Avg to resolve</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>' + callout + note;
+    }
+
+    function renderChart() {
+      const svg = $('line-chart');
+      if (!svg) return;
+
+      const history = api.getTemperatureHistory ? api.getTemperatureHistory() : [];
+      const W = 320;
+      const H = 150;
+      const pad = { top: 18, right: 14, bottom: 24, left: 38 };
+      const plotW = W - pad.left - pad.right;
+      const plotH = H - pad.top - pad.bottom;
+
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.setAttribute('role', 'img');
+      svg.style.width = '100%';
+      svg.style.height = 'auto';
+      svg.style.display = 'block';
+
+      if (history.length === 0) {
+        svg.setAttribute('aria-label', 'No temperature measurements recorded yet');
+        svg.innerHTML =
+          `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="currentColor" opacity="0.6" font-size="12">` +
+          `Waiting for sensor readings…</text>`;
+        return;
+      }
+
+      const temps = history.map((d) => d.c);
+      const rawMin = Math.min(...temps);
+      const rawMax = Math.max(...temps);
+      // Pad the Y-axis by at least ±0.5 °C so flat lines still sit nicely in the middle
+      const mid = (rawMin + rawMax) / 2;
+      const halfSpan = Math.max((rawMax - rawMin) / 2 + 0.3, 0.5);
+      const minY = Math.floor((mid - halfSpan) * 10) / 10;
+      const maxY = Math.ceil((mid + halfSpan) * 10) / 10;
+      const spanY = maxY - minY || 1;
+
+      const t0 = history[0].t;
+      const t1 = history[history.length - 1].t;
+      const spanT = Math.max(t1 - t0, 1000);
+
+      const xOf = (t) => pad.left + ((t - t0) / spanT) * plotW;
+      const yOf = (c) => pad.top + plotH - ((c - minY) / spanY) * plotH;
+
+      const points = history.map((d) => `${xOf(d.t).toFixed(1)},${yOf(d.c).toFixed(1)}`);
+      const last = history[history.length - 1];
+      const lastX = xOf(last.t).toFixed(1);
+      const lastY = yOf(last.c).toFixed(1);
+
+      const startLabel = u.formatClock(t0);
+      const endLabel = u.formatClock(t1);
+      const midY = ((minY + maxY) / 2).toFixed(1);
+
+      svg.setAttribute('aria-label', `Room temperature line chart, latest ${last.c.toFixed(1)} degrees Celsius`);
+
+      svg.innerHTML = `
+        <!-- Horizontal grid lines & Y-axis labels -->
+        <line x1="${pad.left}" y1="${pad.top}" x2="${W - pad.right}" y2="${pad.top}" stroke="currentColor" stroke-opacity="0.12" />
+        <line x1="${pad.left}" y1="${pad.top + plotH / 2}" x2="${W - pad.right}" y2="${pad.top + plotH / 2}" stroke="currentColor" stroke-opacity="0.12" stroke-dasharray="3 3" />
+        <line x1="${pad.left}" y1="${pad.top + plotH}" x2="${W - pad.right}" y2="${pad.top + plotH}" stroke="currentColor" stroke-opacity="0.2" />
+
+        <text x="${pad.left - 6}" y="${pad.top + 4}" text-anchor="end" fill="currentColor" opacity="0.65" font-size="10">${maxY.toFixed(1)}°</text>
+        <text x="${pad.left - 6}" y="${pad.top + plotH / 2 + 3}" text-anchor="end" fill="currentColor" opacity="0.65" font-size="10">${midY}°</text>
+        <text x="${pad.left - 6}" y="${pad.top + plotH + 3}" text-anchor="end" fill="currentColor" opacity="0.65" font-size="10">${minY.toFixed(1)}°</text>
+
+        <!-- X-axis time labels -->
+        <text x="${pad.left}" y="${H - 6}" text-anchor="start" fill="currentColor" opacity="0.65" font-size="10">${u.escapeHtml(startLabel)}</text>
+        <text x="${W - pad.right}" y="${H - 6}" text-anchor="end" fill="currentColor" opacity="0.65" font-size="10">${u.escapeHtml(endLabel)}</text>
+
+        <!-- Temperature trend line -->
+        ${history.length > 1
+          ? `<polyline fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="${points.join(' ')}" />`
+          : ''}
+
+        <!-- Latest reading marker & value -->
+        <circle cx="${lastX}" cy="${lastY}" r="3.5" fill="#0f766e" />
+        <text x="${Math.min(Number(lastX), W - pad.right - 90)}" y="${pad.top - 7}" fill="#0f766e" font-weight="600" font-size="11">Currently ${last.c.toFixed(1)} °C</text>
+      `;
+    }
+
+    function renderResolved() {
+      const done = requests.filter((r) => r.status === 'resolved')
+        .sort((a, b) => (b.resolved_ms || b.created_ms || 0) - (a.resolved_ms || a.created_ms || 0))
+        .slice(0, 8);
+      $('resolved-list').innerHTML = done.length
+        ? done.map((r) => {
+            const t = u.typeInfo(r.type);
+            const took = r.resolved_ms && r.created_ms ? ' (took ' + u.formatDuration(r.resolved_ms - r.created_ms) + ')' : '';
+            return '<li><strong>' + u.escapeHtml(t.label) + '</strong> · Room ' + u.escapeHtml(u.roomLabel(r.room_id)) +
+              ' · resolved ' + u.formatClock(r.resolved_ms || r.created_ms) + took + '</li>';
+          }).join('')
+        : '<li class="muted">Nothing resolved yet.</li>';
+    }
+
+    function renderEscalation() {
+      const now = Date.now();
+      const n = requests.filter((r) => levelOf(r, now) === 3).length;
+      const el = $('esc-banner');
+      el.hidden = n === 0;
+      if (n) {
+        const text = CHARGE
+          ? n + (n === 1 ? ' request has' : ' requests have') + ' not been answered. Please respond now.'
+          : n + (n === 1 ? ' request is' : ' requests are') + ' escalated to the charge nurse. Please respond now.';
+        // Only write when the text changed: a live region rewritten every second is read out every second.
+        if (el.textContent !== text) el.textContent = text;
+      }
+    }
+
+    function render() {
+      renderEscalation();
+      renderHealth();
+      renderActive(false);
+      updateSoundUI();
+      renderEnvironment();
+      renderInsights();
+      renderChart();
+      renderResolved();
+    }
+
+    // ---------- demo-only controls ----------
+    if (api.MOCK) {
+      $('mock-banner').hidden = false;
+      $('mock-controls').hidden = false;
+      const sync = () => {
+        $('mock-sensor').textContent = api.mock.getFlags().sensorOk ? 'Unplug sensor' : 'Reconnect sensor';
+      };
+      sync();
+      $('mock-controls').addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-mock]');
+        if (!btn) return;
+        if (btn.dataset.mock === 'seed') api.mock.seedHistory();
+        if (btn.dataset.mock === 'sensor') api.mock.setSensorOk(!api.mock.getFlags().sensorOk);
+        if (btn.dataset.mock === 'reset') { api.mock.reset(); knownIds = null; lastAlert.clear(); spoken.clear(); escSeen.clear(); }
+        sync();
+      });
+    }
+
+    const live = api.live(onSnapshot, onFail);
+    loop(pollDetection, api.POLL_MS);
+  })();
+  </script>
+</body>
+</html>

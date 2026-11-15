@@ -1,0 +1,41 @@
+{
+  "started_utc": "2026-11-15T15:55:38.677597+00:00",
+  "finished_utc": "2026-11-15T16:03:04.625472+00:00",
+  "wall_seconds": 446.0,
+  "board": "",
+  "host": "86cb9e6c5f35",
+  "machine": "aarch64",
+  "kernel": "6.16.7-g0dd6551ae96b",
+  "python": "3.13.18",
+  "numpy": "2.5.4",
+  "scikit_learn": "1.9.1",
+  "opencv": "4.13.0",
+  "inputs": {
+    "CareGesture Training Data-20261115T153126Z-1-001/CareGesture Training Data/ei-madhacks26-gestures-image-X_training.2.npy": {
+      "bytes": 1158758528
+    },
+    "CareGesture Training Data-20261115T153126Z-1-001/CareGesture Training Data/ei-madhacks26-gestures-image-y_training.2.json": {
+      "bytes": 74369,
+      "sha256": "675bf8ab490056fe3384a5120c52855badafde23a8039ed11d0e35fdff98ffdd"
+    },
+    "CareGesture Training Data-20261115T153126Z-1-001/CareGesture Training Data/ei-madhacks26-gestures-image-X_testing.2.npy": {
+      "bytes": 326860928
+    },
+    "CareGesture Training Data-20261115T153126Z-1-001/CareGesture Training Data/ei-madhacks26-gestures-image-y_testing.2.json": {
+      "bytes": 21714,
+      "sha256": "6a260f55d456bd8195a61c3fcfb3bea7265528980a6885a7c0b81efbfeddcfc4"
+    }
+  },
+  "not_used": [
+    "*.eim (Edge Impulse executables)",
+    "*.lite (Edge Impulse TFLite model)",
+    "any network / cloud API",
+    "any pretrained weights"
+  ],
+  "outputs": [
+    "python/ondevice_model/gesture_hog_svm.npz",
+    "python/ondevice_model/gesture_hog_svm_sklearn.joblib",
+    "training/evidence/metrics.json",
+    "training/evidence/train_log.txt"
+  ]
+}
